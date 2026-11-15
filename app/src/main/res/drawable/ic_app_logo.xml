@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="128dp"
+    android:height="128dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <!-- Nền trắng chuẩn Material You bo tròn -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M 160,0 L 864,0 A 160,160 0 0 1 1024,160 L 1024,864 A 160,160 0 0 1 864,1024 L 160,1024 A 160,160 0 0 1 0,864 L 0,160 A 160,160 0 0 1 160,0 Z" />
+    <!-- Viền nhẹ tương phản cho nền trắng -->
+    <path
+        android:strokeColor="#14000000"
+        android:strokeWidth="8"
+        android:pathData="M 160,4 L 864,4 A 156,156 0 0 1 1020,160 L 1020,864 A 156,156 0 0 1 864,1020 L 160,1020 A 156,156 0 0 1 4,864 L 4,160 A 156,156 0 0 1 160,4 Z" />
+    <!-- Nhóm nốt nhạc đỏ từ Music.svg với kích thước 80% (scale 18.8143 thay vì 23.5179) căn giữa tuyệt đối -->
+    <group
+        android:translateX="-35.0"
+        android:translateY="-91.0"
+        android:scaleX="18.8143"
+        android:scaleY="18.8143">
+        <path
+            android:fillColor="#2EC83737"
+            android:pathData="m 13.9,49.4 c 1.6,2.1 4.9,2.2 7.4,0.3 1,-0.8 2.8,-2.9 2.8,-7.2 V 29.2 l 19,-3.6 V 34 c 0,3 -2.4,3.7 -3.2,3.8 -0.1,0 -0.1,0 -0.2,0 0,0 -0.1,0 -0.1,0 v 0 c -1,0.2 -1.9,0.6 -2.8,1.2 -2.5,1.9 -3.2,5.1 -1.6,7.2 1.6,2.1 4.9,2.2 7.4,0.3 1.3,-1 2.5,-2.8 2.5,-5.7 V 18.5 c 0,-1.2 -1,-1.8 -2.1,-1.5 L 23.8,20.6 C 22.5,21 22,22.3 22,23.4 v 13 c 0,3 -2.7,4.4 -3.5,4.5 0,0 -0.1,0 -0.1,0 -0.1,0 -0.2,0 -0.2,0 v 0 c -0.9,0.2 -1.9,0.6 -2.7,1.2 -2.5,2 -3.2,5.2 -1.6,7.3 z" />
+        <path
+            android:fillColor="#C83737"
+            android:pathData="m 13.9,47.4 c 1.6,2.1 4.9,2.2 7.4,0.3 1,-0.8 2.8,-2.9 2.8,-7.2 V 27.2 l 19,-3.6 V 32 c 0,3 -2.4,3.7 -3.2,3.8 -0.1,0 -0.1,0 -0.2,0 0,0 -0.1,0 -0.1,0 v 0 c -1,0.2 -1.9,0.6 -2.8,1.2 -2.5,1.9 -3.2,5.1 -1.6,7.2 1.6,2.1 4.9,2.2 7.4,0.3 1.3,-1 2.5,-2.8 2.5,-5.7 V 16.5 c 0,-1.2 -1,-1.8 -2.1,-1.5 L 23.8,18.6 C 22.5,19 22,20.3 22,21.4 v 13 c 0,3 -2.7,4.4 -3.5,4.5 0,0 -0.1,0 -0.1,0 -0.1,0 -0.2,0 -0.2,0 v 0 c -0.9,0.2 -1.9,0.6 -2.7,1.2 -2.5,2 -3.2,5.2 -1.6,7.3 z" />
+    </group>
+</vector>

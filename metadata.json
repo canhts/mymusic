@@ -1,0 +1,8 @@
+{
+  "name": "Music Player",
+  "description": "Minimalist offline MP3 music player for Android with Google Material Design 3",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
