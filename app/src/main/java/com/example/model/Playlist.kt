@@ -8,7 +8,8 @@ data class Playlist(
     val name: String,
     val createdAt: Long,
     val songs: List<Song>,
-    val playCount: Int = 0
+    val playCount: Int = 0,
+    val iconId: String? = null
 ) {
     val totalDurationMs: Long = songs.sumOf { it.duration.coerceAtLeast(0L) }
 

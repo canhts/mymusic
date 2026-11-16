@@ -2,7 +2,6 @@ package com.example.ui
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloat
@@ -11,38 +10,30 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
-import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInVertically
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
-import androidx.compose.material.icons.rounded.GraphicEq
-import androidx.compose.material.icons.rounded.LibraryMusic
-import androidx.compose.material.icons.rounded.MusicNote
-import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -55,627 +46,517 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlin.math.PI
-import kotlin.math.cos
-import kotlin.math.sin
+import androidx.compose.runtime.State
+import com.example.R
+
+private val WELCOME_CTA_HALO_BASE_COLOR = Color(0xFFFF5C8A)
+private val WELCOME_CTA_BUTTON_BRUSH = Brush.linearGradient(
+    colors = listOf(Color(0xFFFF5E84), Color(0xFFF63C6B))
+)
+private val WELCOME_BG_GLOW_BRUSH = Brush.radialGradient(
+    colors = listOf(Color(0xFF8347FF).copy(alpha = 0.28f), Color.Transparent),
+    center = Offset.Zero,
+    radius = 100f
+)
+private val WELCOME_BACK_SPHERE_BRUSH = Brush.linearGradient(
+    colors = listOf(
+        Color(0xFFFFB29D),
+        Color(0xFFF3636D),
+        Color(0xFFD63E7A),
+        Color(0xFF6B28D9)
+    ),
+    start = Offset(-20f, -100f),
+    end = Offset(40f, 100f)
+)
+private val WELCOME_BACK_HIGHLIGHT_BRUSH = Brush.radialGradient(
+    colors = listOf(Color(0xFFFFC8B4).copy(alpha = 0.55f), Color.Transparent),
+    center = Offset.Zero,
+    radius = 100f
+)
+private val WELCOME_BACK_SHADOW_BRUSH = Brush.radialGradient(
+    colors = listOf(Color(0xFF4718B8).copy(alpha = 0.65f), Color.Transparent),
+    center = Offset.Zero,
+    radius = 100f
+)
+private val WELCOME_FRONT_SPHERE_BRUSH = Brush.linearGradient(
+    colors = listOf(
+        Color(0xFF6759D9),
+        Color(0xFF7B93E8),
+        Color(0xFF5CF6FF)
+    ),
+    start = Offset(0f, -100f),
+    end = Offset(-40f, 85f)
+)
+private val WELCOME_FRONT_PEACH_BRUSH = Brush.radialGradient(
+    colors = listOf(
+        Color(0xFFFF8F73).copy(alpha = 0.92f),
+        Color(0xFFEA7B7E).copy(alpha = 0.52f),
+        Color.Transparent
+    ),
+    center = Offset.Zero,
+    radius = 100f
+)
+private val WELCOME_FRONT_CYAN_BRUSH = Brush.radialGradient(
+    colors = listOf(
+        Color(0xFF9EFFFF).copy(alpha = 0.96f),
+        Color(0xFF4BEBFF).copy(alpha = 0.65f),
+        Color.Transparent
+    ),
+    center = Offset.Zero,
+    radius = 100f
+)
+private val WELCOME_FRONT_RIM_BRUSH = Brush.radialGradient(
+    colors = listOf(Color.Transparent, Color(0xFFB388FF).copy(alpha = 0.28f)),
+    center = Offset.Zero,
+    radius = 100f
+)
 
 /**
- * Trang giới thiệu ứng dụng (Welcome / Onboarding Screen) khi cài mới ứng dụng:
- * - Phong cách siêu tối giản (Ultra-Minimalist), tinh tế và nghệ thuật.
- * - Hoa văn chìm chuyển động mượt mà (Harmonic Silk Waves & Orbital Acoustic Rings) trên toàn màn hình.
- * - Cụm hoạt hình trung tâm (Kinetic Vinyl & Soundwave Sculpture) sống động, kết hợp nhịp sóng âm.
+ * Trang khởi động khi mới cài đặt ứng dụng (Onboarding / Start Screen):
+ * - Nền chuyển sắc tím hoàng gia sống động hòa quyện cùng hai khối cầu màu 3D mượt mà ở nửa trên.
+ * - Nội dung giới thiệu trực tiếp bằng ngôn ngữ của ứng dụng (Thư viện MP3, Danh sách phát, Hòa ca, Nhịp nhạc).
+ * - Thanh hành động dưới đáy gồm nhãn "Bắt đầu" bên trái và nút tròn san hô kèm quầng hào quang bên phải.
  */
-@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun WelcomeScreen(
     onStartClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val haptic = LocalHapticFeedback.current
     var visible by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         visible = true
     }
 
-    val infiniteTransition = rememberInfiniteTransition(label = "welcome_artistic_motion")
+    val infiniteTransition = rememberInfiniteTransition(label = "welcome_orb_motion")
 
-    // Pha chuyển động của các dải sóng lụa nghệ thuật dưới nền
-    val wavePhase by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = (2f * PI).toFloat(),
+    val orbDriftState = infiniteTransition.animateFloat(
+        initialValue = -1f,
+        targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 7200, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
+            animation = tween(durationMillis = 4800, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse
         ),
-        label = "welcome_wave_phase"
+        label = "welcome_orb_drift"
     )
 
-    // Góc xoay chậm của hoa văn quỹ đạo âm thanh
-    val orbitAngle by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 360f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 24000, easing = LinearEasing),
-            repeatMode = RepeatMode.Restart
-        ),
-        label = "welcome_orbit_angle"
-    )
-
-    // Nhịp thở mượt mà của đĩa tâm điểm và hào quang
-    val breathProgress by infiniteTransition.animateFloat(
+    val haloPulseState = infiniteTransition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2800, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 2200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
-        label = "welcome_breath_progress"
+        label = "welcome_halo_pulse"
     )
 
-    // Chuyển động bồng bềnh của biểu tượng trung tâm
-    val floatOffsetDp by infiniteTransition.animateFloat(
-        initialValue = -6f,
-        targetValue = 6f,
+    val arrowNudgeState = infiniteTransition.animateFloat(
+        initialValue = -1.5f,
+        targetValue = 3f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 2400, easing = FastOutSlowInEasing),
-            repeatMode = RepeatMode.Reverse
-        ),
-        label = "welcome_float_offset"
-    )
-
-    // Độ dịch chuyển nhẹ của mũi tên trên nút Bắt đầu
-    val arrowNudgeDp by infiniteTransition.animateFloat(
-        initialValue = 0f,
-        targetValue = 4f,
-        animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1100, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = 1200, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Reverse
         ),
         label = "welcome_arrow_nudge"
     )
 
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val secondaryColor = MaterialTheme.colorScheme.secondary
-    val tertiaryColor = MaterialTheme.colorScheme.tertiary
-    val surfaceColor = MaterialTheme.colorScheme.surface
-    val onSurfaceColor = MaterialTheme.colorScheme.onSurface
-    val onSurfaceVariantColor = MaterialTheme.colorScheme.onSurfaceVariant
+    val themePrimary = MaterialTheme.colorScheme.primary
+    val backgroundBrush = remember(themePrimary) {
+        val deepVioletTop = lerp(Color(0xFF4712D4), themePrimary, 0.14f)
+        val deepVioletMid = lerp(Color(0xFF5A21E6), themePrimary, 0.16f)
+        val deepVioletBottom = lerp(Color(0xFF4514C7), themePrimary, 0.12f)
+        Brush.verticalGradient(
+            colors = listOf(deepVioletTop, deepVioletMid, deepVioletBottom)
+        )
+    }
 
-    Box(
+    val triggerStart = rememberDebouncedAction(debounceMs = 300L) {
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        onStartClick()
+    }
+
+    val startActionLabel = stringResource(R.string.welcome_start_action)
+
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
-            .background(surfaceColor)
+            .background(brush = backgroundBrush)
             .testTag("welcome_screen"),
         contentAlignment = Alignment.Center
     ) {
-        // 1. Lớp nền hoa văn nghệ thuật siêu tối giản & hoạt hình sóng lụa (Submerged Kinetic Art)
-        WelcomeArtisticBackgroundCanvas(
-            wavePhase = wavePhase,
-            orbitAngle = orbitAngle,
-            breathProgress = breathProgress,
-            primaryColor = primaryColor,
-            secondaryColor = secondaryColor,
-            tertiaryColor = tertiaryColor
+        val isCompactHeight = maxHeight < 580.dp
+        val isTabletOrWide = maxWidth >= 600.dp
+
+        // 1. Nền minh họa 2 khối cầu 3D đa sắc + kết cấu hạt mịn (đọc State chỉ ở Draw Phase)
+        WelcomeSpheresHeroCanvas(
+            orbDriftState = orbDriftState,
+            haloPulseState = haloPulseState,
+            isCompactHeight = isCompactHeight,
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("welcome_hero_visual")
         )
 
-        // 2. Nội dung chính cân đối theo bố cục tối giản
+        // 2. Bố cục nội dung chính ở nửa dưới và hàng CTA ở đáy
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .widthIn(max = 460.dp)
+                .widthIn(max = 520.dp)
                 .systemBarsPadding()
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.SpaceBetween
+                .padding(
+                    horizontal = if (isTabletOrWide) 36.dp else 28.dp,
+                    vertical = if (isCompactHeight) 16.dp else 24.dp
+                ),
+            verticalArrangement = Arrangement.Bottom,
+            horizontalAlignment = Alignment.Start
         ) {
-            Spacer(modifier = Modifier.height(2.dp))
+            Spacer(modifier = Modifier.weight(1f))
 
-            // Cụm điêu khắc âm thanh hoạt hình + Tiêu đề tối giản ở trung tâm
             AnimatedVisibility(
                 visible = visible,
-                enter = fadeIn(tween(650)) + scaleIn(
+                enter = fadeIn(tween(580)) + slideInVertically(
                     animationSpec = spring(
-                        dampingRatio = 0.68f,
+                        dampingRatio = 0.78f,
                         stiffness = Spring.StiffnessLow
                     ),
-                    initialScale = 0.86f
+                    initialOffsetY = { it / 5 }
                 )
             ) {
                 Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalAlignment = Alignment.Start
                 ) {
-                    // Tác phẩm hoạt hình tâm điểm (Kinetic Sound Sculpture)
-                    WelcomeKineticHeroSculpture(
-                        orbitAngle = orbitAngle,
-                        breathProgress = breathProgress,
-                        floatOffsetDp = floatOffsetDp,
-                        primaryColor = primaryColor,
-                        secondaryColor = secondaryColor,
-                        tertiaryColor = tertiaryColor
-                    )
-
-                    Spacer(modifier = Modifier.height(16.dp))
-
                     Text(
-                        text = "Trình phát nhạc",
-                        style = MaterialTheme.typography.headlineMedium.copy(
+                        text = stringResource(R.string.welcome_title),
+                        style = MaterialTheme.typography.displaySmall.copy(
+                            fontSize = if (isCompactHeight) 28.sp else 38.sp,
+                            lineHeight = if (isCompactHeight) 32.sp else 43.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            letterSpacing = (-0.5).sp
+                            letterSpacing = (-0.9).sp
                         ),
-                        color = onSurfaceColor,
-                        textAlign = TextAlign.Center,
+                        color = Color.White,
                         modifier = Modifier.testTag("welcome_title")
                     )
 
-                    Spacer(modifier = Modifier.height(6.dp))
+                    Spacer(modifier = Modifier.height(if (isCompactHeight) 10.dp else 16.dp))
 
                     Text(
-                        text = "Trải nghiệm nghe nhạc ngoại tuyến mượt mà, tối giản và sống động trên thiết bị của bạn.",
+                        text = stringResource(R.string.welcome_subtitle),
                         style = MaterialTheme.typography.bodyMedium.copy(
-                            lineHeight = 19.sp
+                            fontSize = if (isCompactHeight) 13.sp else 14.5.sp,
+                            lineHeight = if (isCompactHeight) 18.sp else 21.sp,
+                            fontWeight = FontWeight.Normal
                         ),
-                        color = onSurfaceVariantColor.copy(alpha = 0.88f),
-                        textAlign = TextAlign.Center,
+                        color = Color.White.copy(alpha = 0.78f),
+                        maxLines = if (isCompactHeight) 3 else 4,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
-                            .padding(horizontal = 8.dp)
+                            .fillMaxWidth(0.95f)
                             .testTag("welcome_subtitle")
                     )
+                }
+            }
 
-                    Spacer(modifier = Modifier.height(14.dp))
+            Spacer(modifier = Modifier.height(if (isCompactHeight) 18.dp else 34.dp))
 
-                    // Cụm 3 thẻ tính năng siêu gọn gàng dạng viên nhộng kính mờ tự động căn dòng
-                    FlowRow(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.CenterHorizontally),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
+            AnimatedVisibility(
+                visible = visible,
+                enter = fadeIn(tween(700)) + slideInVertically(
+                    animationSpec = spring(
+                        dampingRatio = 0.75f,
+                        stiffness = Spring.StiffnessLow
+                    ),
+                    initialOffsetY = { it / 3 }
+                )
+            ) {
+                val labelInteractionSource = remember { MutableInteractionSource() }
+                val buttonInteractionSource = remember { MutableInteractionSource() }
+
+                val buttonDiameter = if (isCompactHeight) 52.dp else 60.dp
+                val haloDiameter = if (isCompactHeight) 68.dp else 78.dp
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = if (isCompactHeight) 4.dp else 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = startActionLabel,
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontSize = if (isCompactHeight) 16.sp else 17.sp,
+                            fontWeight = FontWeight.Bold,
+                            letterSpacing = 0.1.sp
+                        ),
+                        color = Color.White,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(14.dp))
+                            .heightIn(min = 48.dp)
+                            .clickable(
+                                interactionSource = labelInteractionSource,
+                                indication = null,
+                                role = Role.Button,
+                                onClick = triggerStart
+                            )
+                            .padding(vertical = 12.dp, horizontal = 4.dp)
+                            .testTag("welcome_start_label")
+                    )
+
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier.size(haloDiameter)
                     ) {
-                        WelcomeMinimalFeatureChip(
-                            icon = Icons.Rounded.GraphicEq,
-                            label = "Nghe ngoại tuyến"
+                        // Vòng hào quang đồng tâm mờ nhẹ tỏa ra xung quanh nút tròn (GPU drawBehind + graphicsLayer)
+                        Box(
+                            modifier = Modifier
+                                .size(haloDiameter)
+                                .graphicsLayer {
+                                    val pulseScale = 0.96f + 0.08f * haloPulseState.value
+                                    scaleX = pulseScale
+                                    scaleY = pulseScale
+                                }
+                                .drawBehind {
+                                    drawCircle(
+                                        color = WELCOME_CTA_HALO_BASE_COLOR.copy(
+                                            alpha = 0.22f + 0.08f * haloPulseState.value
+                                        )
+                                    )
+                                }
                         )
-                        WelcomeMinimalFeatureChip(
-                            icon = Icons.Rounded.LibraryMusic,
-                            label = "Danh sách phát"
-                        )
-                        WelcomeMinimalFeatureChip(
-                            icon = Icons.Rounded.Tune,
-                            label = "Bộ chỉnh âm"
-                        )
+
+                        Surface(
+                            onClick = triggerStart,
+                            interactionSource = buttonInteractionSource,
+                            shape = CircleShape,
+                            color = Color.Transparent,
+                            tonalElevation = 0.dp,
+                            shadowElevation = 0.dp,
+                            modifier = Modifier
+                                .size(buttonDiameter)
+                                .springPress(scaleDown = 0.90f, interactionSource = buttonInteractionSource)
+                                .semantics {
+                                    contentDescription = startActionLabel
+                                }
+                                .testTag("btn_welcome_start")
+                        ) {
+                            Box(
+                                contentAlignment = Alignment.Center,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .background(brush = WELCOME_CTA_BUTTON_BRUSH)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                                    contentDescription = null,
+                                    tint = Color.White,
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .graphicsLayer {
+                                            translationX = arrowNudgeState.value.dp.toPx()
+                                        }
+                                )
+                            }
+                        }
                     }
                 }
             }
-
-            // Nút hành động chính (Primary CTA) tối giản với hiệu ứng nhấn lò xo đàn hồi
-            AnimatedVisibility(
-                visible = visible,
-                enter = fadeIn(tween(750)) + slideInVertically(
-                    animationSpec = spring(
-                        dampingRatio = 0.72f,
-                        stiffness = Spring.StiffnessLow
-                    ),
-                    initialOffsetY = { it / 2 }
-                )
-            ) {
-                val startInteractionSource = remember { MutableInteractionSource() }
-                Button(
-                    onClick = onStartClick,
-                    shape = CircleShape,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = primaryColor,
-                        contentColor = MaterialTheme.colorScheme.onPrimary
-                    ),
-                    elevation = ButtonDefaults.buttonElevation(
-                        defaultElevation = 0.dp,
-                        pressedElevation = 0.dp
-                    ),
-                    contentPadding = PaddingValues(horizontal = 28.dp, vertical = 16.dp),
-                    interactionSource = startInteractionSource,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp)
-                        .springPress(scaleDown = 0.95f, interactionSource = startInteractionSource)
-                        .radiantShadow(
-                            color = primaryColor.copy(alpha = 0.32f),
-                            borderRadius = 28.dp,
-                            blurRadius = 18.dp,
-                            offsetY = 5.dp
-                        )
-                        .testTag("btn_welcome_start")
-                ) {
-                    Text(
-                        text = "Bắt đầu nghe nhạc",
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontWeight = FontWeight.Bold,
-                            letterSpacing = 0.2.sp
-                        )
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                        contentDescription = null,
-                        modifier = Modifier
-                            .size(20.dp)
-                            .offset(x = arrowNudgeDp.dp)
-                    )
-                }
-            }
         }
     }
 }
 
 /**
- * Hoa văn nền toàn màn hình siêu tối giản:
- * - Kết hợp quầng sáng cực quang mềm mại, vòng cung quỹ đạo đồng tâm mảnh mai,
- *   và những dải sóng lụa (Harmonic Silk Ribbons) chuyển động êm ái theo thời gian thực.
+ * Vẽ 2 khối cầu 3D đa sắc đặc trưng ở nửa trên:
+ * - Quả cầu san hô - hồng đậm lớn tràn khỏi mép trên phải.
+ * - Quả cầu lam ngọc - oải hương - đào dịu nằm chồng phía trước lệch về mép trái trên.
+ * - Sử dụng các Brush chuẩn hóa tĩnh + transform GPU để không cấp phát bộ nhớ ở mỗi khung hình.
  */
 @Composable
-private fun WelcomeArtisticBackgroundCanvas(
-    wavePhase: Float,
-    orbitAngle: Float,
-    breathProgress: Float,
-    primaryColor: Color,
-    secondaryColor: Color,
-    tertiaryColor: Color
+private fun WelcomeSpheresHeroCanvas(
+    orbDriftState: State<Float>,
+    haloPulseState: State<Float>,
+    isCompactHeight: Boolean,
+    modifier: Modifier = Modifier
 ) {
-    val ribbonPath = remember { Path() }
-    Canvas(
-        modifier = Modifier
-            .fillMaxSize()
-            .testTag("welcome_ambient_art")
-    ) {
+    val backSphereClip = remember { Path() }
+    val frontSphereClip = remember { Path() }
+
+    val grainPoints = remember {
+        buildList {
+            var seed = 42917L
+            repeat(90) {
+                seed = (seed * 6364136223846793005L + 1442695040888963407L)
+                val rx = ((seed ushr 16) and 0xFFFFL) / 65535f
+                seed = (seed * 6364136223846793005L + 1442695040888963407L)
+                val ry = ((seed ushr 16) and 0xFFFFL) / 65535f
+                add(Offset(rx, ry))
+            }
+        }
+    }
+
+    Canvas(modifier = modifier) {
         val w = size.width
         val h = size.height
         val minDim = minOf(w, h)
+        val orbDrift = orbDriftState.value
+        val haloPulse = haloPulseState.value
+        val scaleFactor = if (isCompactHeight) 0.80f else 1.0f
 
-        // 1. Hào quang cực quang mờ ảo phía trên và phía dưới
-        val topGlowCenter = Offset(w * 0.5f, h * 0.34f)
-        val topGlowRadius = minDim * (0.72f + 0.08f * breathProgress)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    primaryColor.copy(alpha = 0.14f),
-                    tertiaryColor.copy(alpha = 0.05f),
-                    Color.Transparent
-                ),
-                center = topGlowCenter,
-                radius = topGlowRadius
-            ),
-            radius = topGlowRadius,
-            center = topGlowCenter
+        // 1. Ánh sáng nền nhẹ sau các khối cầu
+        val bgGlowRadius = minDim * 0.85f
+        val bgGlowScale = bgGlowRadius / 100f
+        withTransform({
+            translate(left = w * 0.42f, top = h * 0.24f)
+            scale(scaleX = bgGlowScale, scaleY = bgGlowScale, pivot = Offset.Zero)
+        }) {
+            drawCircle(
+                brush = WELCOME_BG_GLOW_BRUSH,
+                radius = 100f,
+                center = Offset.Zero
+            )
+        }
+
+        // 2. Quả cầu sau (Coral - Rose - Violet) tràn mép trên phải
+        val backRadius = (minDim * 0.54f * scaleFactor) * (1f + 0.014f * haloPulse)
+        val backCenterX = w * 0.58f + orbDrift * 6.dp.toPx()
+        val backCenterY = h * (if (isCompactHeight) 0.02f else 0.05f) - orbDrift * 4.dp.toPx()
+        val backScale = backRadius / 100f
+
+        backSphereClip.reset()
+        backSphereClip.addOval(
+            Rect(
+                left = backCenterX - backRadius,
+                top = backCenterY - backRadius,
+                right = backCenterX + backRadius,
+                bottom = backCenterY + backRadius
+            )
         )
+        clipPath(backSphereClip) {
+            withTransform({
+                translate(left = backCenterX, top = backCenterY)
+                scale(scaleX = backScale, scaleY = backScale, pivot = Offset.Zero)
+            }) {
+                drawRect(
+                    brush = WELCOME_BACK_SPHERE_BRUSH,
+                    topLeft = Offset(-102f, -102f),
+                    size = Size(204f, 204f)
+                )
+            }
+            // Điểm sáng dịu góc trên trái quả cầu lớn
+            val backHiScale = (backRadius * 0.9f) / 100f
+            withTransform({
+                translate(left = backCenterX - backRadius * 0.35f, top = backCenterY - backRadius * 0.45f)
+                scale(scaleX = backHiScale, scaleY = backHiScale, pivot = Offset.Zero)
+            }) {
+                drawCircle(
+                    brush = WELCOME_BACK_HIGHLIGHT_BRUSH,
+                    radius = 100f,
+                    center = Offset.Zero
+                )
+            }
+            // Bóng tối mềm phần dưới trái quả cầu lớn để hòa vào nền tím
+            val backShadowScale = (backRadius * 0.95f) / 100f
+            withTransform({
+                translate(left = backCenterX - backRadius * 0.55f, top = backCenterY + backRadius * 0.58f)
+                scale(scaleX = backShadowScale, scaleY = backShadowScale, pivot = Offset.Zero)
+            }) {
+                drawCircle(
+                    brush = WELCOME_BACK_SHADOW_BRUSH,
+                    radius = 100f,
+                    center = Offset.Zero
+                )
+            }
+        }
 
-        val bottomGlowCenter = Offset(w * 0.82f, h * 0.86f)
-        drawCircle(
-            brush = Brush.radialGradient(
-                colors = listOf(
-                    secondaryColor.copy(alpha = 0.10f),
-                    Color.Transparent
-                ),
-                center = bottomGlowCenter,
-                radius = minDim * 0.65f
-            ),
-            radius = minDim * 0.65f,
-            center = bottomGlowCenter
+        // 3. Quả cầu trước (Cyan - Lavender - Peach) lệch góc trên trái và đè lên mép cầu sau
+        val frontRadius = (minDim * 0.39f * scaleFactor) * (1f + 0.018f * (1f - haloPulse))
+        val frontCenterX = w * 0.17f - orbDrift * 5.dp.toPx()
+        val frontCenterY = h * (if (isCompactHeight) 0.29f else 0.33f) + orbDrift * 5.dp.toPx()
+        val frontScale = frontRadius / 100f
+
+        frontSphereClip.reset()
+        frontSphereClip.addOval(
+            Rect(
+                left = frontCenterX - frontRadius,
+                top = frontCenterY - frontRadius,
+                right = frontCenterX + frontRadius,
+                bottom = frontCenterY + frontRadius
+            )
         )
-
-        // 2. Hoa văn vòng cung đồng tâm siêu mảnh ở góc trên phải và góc dưới trái
-        val topCornerAnchor = Offset(w * 0.92f, h * 0.08f)
-        for (i in 0..2) {
-            val r = minDim * (0.28f + i * 0.14f)
-            drawArc(
-                color = primaryColor.copy(alpha = 0.09f - i * 0.02f),
-                startAngle = 115f + sin(wavePhase + i) * 6f,
-                sweepAngle = 135f,
-                useCenter = false,
-                topLeft = Offset(topCornerAnchor.x - r, topCornerAnchor.y - r),
-                size = Size(r * 2f, r * 2f),
-                style = Stroke(width = (1.1f - i * 0.2f).dp.toPx(), cap = StrokeCap.Round)
-            )
-        }
-
-        val bottomCornerAnchor = Offset(w * 0.08f, h * 0.92f)
-        for (i in 0..2) {
-            val r = minDim * (0.24f + i * 0.13f)
-            drawArc(
-                color = tertiaryColor.copy(alpha = 0.08f - i * 0.018f),
-                startAngle = -65f + cos(wavePhase + i) * 6f,
-                sweepAngle = 130f,
-                useCenter = false,
-                topLeft = Offset(bottomCornerAnchor.x - r, bottomCornerAnchor.y - r),
-                size = Size(r * 2f, r * 2f),
-                style = Stroke(width = (1.0f - i * 0.18f).dp.toPx(), cap = StrokeCap.Round)
-            )
-        }
-
-        // 3. Các dải lụa sóng âm (Harmonic Silk Waves) uốn lượn mềm mại ngang qua không gian
-        val ribbonCount = 3
-        val steps = 40
-        for (ribbonIndex in 0 until ribbonCount) {
-            ribbonPath.reset()
-            val baseY = h * (0.31f + ribbonIndex * 0.045f)
-            val amplitude = minDim * (0.045f + ribbonIndex * 0.014f)
-            val phaseShift = wavePhase + ribbonIndex * 0.85f
-            for (step in 0..steps) {
-                val t = step / steps.toFloat()
-                val x = w * t
-                val envelope = sin(t * PI).toFloat()
-                val y = baseY +
-                    sin(t * 2.2f * PI + phaseShift).toFloat() * amplitude * envelope +
-                    cos(t * 1.1f * PI - phaseShift * 0.6f).toFloat() * (amplitude * 0.35f)
-                if (step == 0) ribbonPath.moveTo(x, y) else ribbonPath.lineTo(x, y)
-            }
-            val ribbonColor = when (ribbonIndex) {
-                0 -> primaryColor
-                1 -> tertiaryColor
-                else -> secondaryColor
-            }
-            val ribbonAlpha = 0.14f - ribbonIndex * 0.03f
-            drawPath(
-                path = ribbonPath,
-                brush = Brush.horizontalGradient(
-                    colors = listOf(
-                        Color.Transparent,
-                        ribbonColor.copy(alpha = ribbonAlpha),
-                        ribbonColor.copy(alpha = ribbonAlpha * 1.25f),
-                        ribbonColor.copy(alpha = ribbonAlpha),
-                        Color.Transparent
-                    )
-                ),
-                style = Stroke(
-                    width = (1.35f - ribbonIndex * 0.25f).dp.toPx(),
-                    cap = StrokeCap.Round
-                )
-            )
-        }
-
-        // 4. Vòng quỹ đạo nghệ thuật xoay chậm quanh tâm điểm
-        val sculptureCenter = Offset(w * 0.5f, h * 0.34f)
-        val outerOrbitRadius = minDim * 0.33f
-        rotate(degrees = orbitAngle * 0.5f, pivot = sculptureCenter) {
-            drawCircle(
-                color = primaryColor.copy(alpha = 0.07f),
-                radius = outerOrbitRadius,
-                center = sculptureCenter,
-                style = Stroke(width = 0.8.dp.toPx())
-            )
-        }
-    }
-}
-
-/**
- * Tác phẩm điêu khắc âm thanh hoạt hình ở trung tâm (Kinetic Vinyl & Soundwave Sculpture):
- * - Các đường gợn sóng đồng tâm co giãn theo nhịp thở.
- * - Vòng quỹ đạo nghệ thuật xoay tròn cùng các hạt vệ tinh âm nhạc.
- * - Đĩa trung tâm lơ lửng kết hợp biểu tượng nốt nhạc và bộ sóng nhạc (Equalizer) đang nhịp.
- */
-@Composable
-private fun WelcomeKineticHeroSculpture(
-    orbitAngle: Float,
-    breathProgress: Float,
-    floatOffsetDp: Float,
-    primaryColor: Color,
-    secondaryColor: Color,
-    tertiaryColor: Color
-) {
-    Box(
-        contentAlignment = Alignment.Center,
-        modifier = Modifier
-            .size(148.dp)
-            .testTag("welcome_hero_visual")
-    ) {
-        // Lớp hoa văn quỹ đạo & vòng sóng âm đồng tâm xoay mượt
-        Canvas(modifier = Modifier.fillMaxSize()) {
-            val center = Offset(size.width / 2f, size.height / 2f)
-            val maxR = size.minDimension / 2f
-
-            // Vòng gợn sóng lan tỏa theo nhịp thở
-            val pulseRadius1 = maxR * (0.82f + 0.14f * breathProgress)
-            drawCircle(
-                color = primaryColor.copy(alpha = 0.14f * (1f - breathProgress * 0.5f)),
-                radius = pulseRadius1,
-                center = center,
-                style = Stroke(width = 1.2.dp.toPx())
-            )
-
-            val pulseRadius2 = maxR * (0.68f + 0.10f * (1f - breathProgress))
-            drawCircle(
-                color = tertiaryColor.copy(alpha = 0.16f),
-                radius = pulseRadius2,
-                center = center,
-                style = Stroke(width = 1.dp.toPx())
-            )
-
-            // Vòng cung quỹ đạo xoay thuận chiều kim đồng hồ
-            rotate(degrees = orbitAngle, pivot = center) {
-                val orbitR = maxR * 0.86f
-                drawArc(
-                    brush = Brush.sweepGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            primaryColor.copy(alpha = 0.45f),
-                            tertiaryColor.copy(alpha = 0.55f),
-                            Color.Transparent
-                        ),
-                        center = center
-                    ),
-                    startAngle = 15f,
-                    sweepAngle = 130f,
-                    useCenter = false,
-                    topLeft = Offset(center.x - orbitR, center.y - orbitR),
-                    size = Size(orbitR * 2f, orbitR * 2f),
-                    style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
-                )
-
-                drawArc(
-                    brush = Brush.sweepGradient(
-                        colors = listOf(
-                            Color.Transparent,
-                            secondaryColor.copy(alpha = 0.42f),
-                            primaryColor.copy(alpha = 0.48f),
-                            Color.Transparent
-                        ),
-                        center = center
-                    ),
-                    startAngle = 195f,
-                    sweepAngle = 130f,
-                    useCenter = false,
-                    topLeft = Offset(center.x - orbitR, center.y - orbitR),
-                    size = Size(orbitR * 2f, orbitR * 2f),
-                    style = Stroke(width = 1.8.dp.toPx(), cap = StrokeCap.Round)
-                )
-
-                // 2 hạt vệ tinh nhỏ trên vành quỹ đạo
-                val satAngle1 = Math.toRadians(145.0)
-                val sat1 = Offset(
-                    x = center.x + (orbitR * cos(satAngle1)).toFloat(),
-                    y = center.y + (orbitR * sin(satAngle1)).toFloat()
+        clipPath(frontSphereClip) {
+            withTransform({
+                translate(left = frontCenterX, top = frontCenterY)
+                scale(scaleX = frontScale, scaleY = frontScale, pivot = Offset.Zero)
+            }) {
+                drawRect(
+                    brush = WELCOME_FRONT_SPHERE_BRUSH,
+                    topLeft = Offset(-102f, -102f),
+                    size = Size(204f, 204f)
                 )
                 drawCircle(
-                    color = primaryColor.copy(alpha = 0.85f),
-                    radius = 3.2.dp.toPx(),
-                    center = sat1
+                    brush = WELCOME_FRONT_RIM_BRUSH,
+                    radius = 100f,
+                    center = Offset.Zero
                 )
-
-                val satAngle2 = Math.toRadians(325.0)
-                val sat2 = Offset(
-                    x = center.x + (orbitR * cos(satAngle2)).toFloat(),
-                    y = center.y + (orbitR * sin(satAngle2)).toFloat()
-                )
+            }
+            // Quầng đào ấm áp phía trên phải của quả cầu trước
+            val frontSpotScale = (frontRadius * 0.95f) / 100f
+            withTransform({
+                translate(left = frontCenterX + frontRadius * 0.42f, top = frontCenterY - frontRadius * 0.14f)
+                scale(scaleX = frontSpotScale, scaleY = frontSpotScale, pivot = Offset.Zero)
+            }) {
                 drawCircle(
-                    color = tertiaryColor.copy(alpha = 0.85f),
-                    radius = 3.0.dp.toPx(),
-                    center = sat2
+                    brush = WELCOME_FRONT_PEACH_BRUSH,
+                    radius = 100f,
+                    center = Offset.Zero
                 )
             }
-
-            // Vòng rãnh đĩa than (Vinyl Micro-grooves) xoay ngược chiều nhẹ nhàng
-            rotate(degrees = -orbitAngle * 0.65f, pivot = center) {
-                val innerOrbitR = maxR * 0.62f
-                for (arcIndex in 0..3) {
-                    drawArc(
-                        color = primaryColor.copy(alpha = 0.22f),
-                        startAngle = arcIndex * 90f + 12f,
-                        sweepAngle = 54f,
-                        useCenter = false,
-                        topLeft = Offset(center.x - innerOrbitR, center.y - innerOrbitR),
-                        size = Size(innerOrbitR * 2f, innerOrbitR * 2f),
-                        style = Stroke(width = 1.1.dp.toPx(), cap = StrokeCap.Round)
-                    )
-                }
+            // Điểm sáng lam ngọc rực rỡ ở phần dưới trái của quả cầu trước
+            withTransform({
+                translate(left = frontCenterX - frontRadius * 0.28f, top = frontCenterY + frontRadius * 0.42f)
+                scale(scaleX = frontSpotScale, scaleY = frontSpotScale, pivot = Offset.Zero)
+            }) {
+                drawCircle(
+                    brush = WELCOME_FRONT_CYAN_BRUSH,
+                    radius = 100f,
+                    center = Offset.Zero
+                )
             }
         }
 
-        // Đĩa nghệ thuật trung tâm nổi khối với hiệu ứng lơ lửng
-        Surface(
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.primaryContainer,
-            tonalElevation = 6.dp,
-            border = BorderStroke(
-                width = 1.2.dp,
-                color = primaryColor.copy(alpha = 0.25f)
-            ),
-            modifier = Modifier
-                .size(92.dp)
-                .offset(y = floatOffsetDp.dp)
-                .graphicsLayer {
-                    val scale = 0.98f + 0.04f * breathProgress
-                    scaleX = scale
-                    scaleY = scale
-                }
-                .radiantShadow(
-                    color = primaryColor.copy(alpha = 0.28f),
-                    borderRadius = 46.dp,
-                    blurRadius = 20.dp,
-                    offsetY = 5.dp
-                )
-        ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                primaryColor.copy(alpha = 0.16f),
-                                Color.Transparent
-                            )
-                        )
-                    )
-            ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
-                ) {
-                    Icon(
-                        imageVector = Icons.Rounded.MusicNote,
-                        contentDescription = null,
-                        tint = primaryColor,
-                        modifier = Modifier
-                            .size(38.dp)
-                            .graphicsLayer {
-                                rotationZ = sin(breathProgress * PI).toFloat() * 6f - 3f
-                            }
-                    )
-                    Spacer(modifier = Modifier.height(3.dp))
-                    AudioWaveformEqualizer(
-                        isPlaying = true,
-                        tint = primaryColor.copy(alpha = 0.85f),
-                        modifier = Modifier.size(width = 20.dp, height = 11.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun WelcomeMinimalFeatureChip(
-    icon: ImageVector,
-    label: String
-) {
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.72f),
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        border = BorderStroke(
-            width = 0.8.dp,
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.38f)
-        )
-    ) {
-        Row(
-            modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(5.dp)
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(14.dp)
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall.copy(
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 11.sp
-                )
+        // 4. Lớp hạt mịn nhẹ giúp các dải chuyển màu có chiều sâu mượt mà
+        val grainColor = Color.White.copy(alpha = 0.032f)
+        val dotRadius = 0.9.dp.toPx()
+        for (i in grainPoints.indices) {
+            val normOffset = grainPoints[i]
+            drawCircle(
+                color = grainColor,
+                radius = dotRadius,
+                center = Offset(normOffset.x * w, normOffset.y * h)
             )
         }
     }
 }
-

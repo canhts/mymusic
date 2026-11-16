@@ -59,6 +59,18 @@ object Id3v2LyricsExtractor {
         """(\[(nhạc(\s*dạo[^\]]*)?|giang\s*tấu[^\]]*|dạo\s*đầu[^\]]*|dạo\s*nhạc[^\]]*|đoạn\s*nhạc[^\]]*|nhạc\s*không\s*lời[^\]]*|intro[^\]]*|outro[^\]]*|instrumental[^\]]*|interlude[^\]]*|solo[^\]]*|music[^\]]*|beat[^\]]*)]|\((nhạc(\s*dạo[^\)]*)?|giang\s*tấu[^\)]*|dạo\s*đầu[^\)]*|dạo\s*nhạc[^\)]*|đoạn\s*nhạc[^\)]*|nhạc\s*không\s*lời[^\)]*|intro[^\)]*|outro[^\)]*|instrumental[^\)]*|interlude[^\)]*|solo[^\)]*|music[^\)]*|beat[^\)]*)\))""",
         RegexOption.IGNORE_CASE
     )
+    private val SECTION_PREFIX_REGEX = Regex(
+        """^(\[(?:verse|chorus|pre-chorus|post-chorus|bridge|outro|intro|hook|refrain|interlude|điệp\s*khúc|lời|đoạn)[^\]]*]|\((?:verse|chorus|pre-chorus|post-chorus|bridge|outro|intro|hook|refrain|interlude|điệp\s*khúc|lời|đoạn)[^)]*\))\s*[:\-–—]?\s*""",
+        RegexOption.IGNORE_CASE
+    )
+    private val TARGET_FRAME_IDS = hashSetOf(
+        "SYLT", "SLT",
+        "USLT", "ULT",
+        "TXXX", "TXX",
+        "COMM", "COM",
+        "TIT2", "TT2",
+        "TPE1", "TP1"
+    )
 
     /**
      * Kiểm tra và làm sạch một dòng văn bản lời bài hát:
@@ -81,10 +93,9 @@ object Id3v2LyricsExtractor {
         if (CREDIT_LINE_REGEX.containsMatchIn(text)) return null
 
         // Loại bỏ nhãn phân đoạn đứng đầu câu như "[Điệp khúc]", "[Verse 1]:", "(Chorus)"
-        text = text.replace(
-            Regex("""^(\[(verse|chorus|pre-?chorus|bridge|hook|outro|intro|điệp\s*khúc|lời\s*\d+|đoạn\s*\d+)[^\]]*]|\((verse|chorus|pre-?chorus|bridge|hook|outro|intro|điệp\s*khúc|lời\s*\d+|đoạn\s*\d+)[^\)]*\))\s*[:\-]?\s*""", RegexOption.IGNORE_CASE),
-            ""
-        ).replace(LEADING_TRAILING_NOTES_REGEX, "").trim()
+        text = text.replace(SECTION_PREFIX_REGEX, "")
+            .replace(LEADING_TRAILING_NOTES_REGEX, "")
+            .trim()
 
         if (text.isEmpty() || SYMBOLS_ONLY_REGEX.matches(text) || INSTRUMENTAL_LINE_REGEX.matches(text)) {
             return null
@@ -247,7 +258,7 @@ object Id3v2LyricsExtractor {
 
             if (frameSize <= 0 || frameSize > remaining) break
 
-            val isTargetFrame = frameId in setOf("SYLT", "SLT", "USLT", "ULT", "TXXX", "TXX", "COMM", "COM", "TIT2", "TT2", "TPE1", "TP1")
+            val isTargetFrame = frameId in TARGET_FRAME_IDS
             if (isTargetFrame && frameSize <= 512 * 1024) {
                 val payload = ByteArray(frameSize)
                 val readPayload = readFully(inputStream, payload, 0, frameSize)

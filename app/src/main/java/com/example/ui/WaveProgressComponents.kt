@@ -11,14 +11,22 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.OpenInFull
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -30,6 +38,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
@@ -43,6 +52,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -50,12 +60,15 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.example.R
 import kotlin.math.sin
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
+
+private val DIGIT_STRINGS = arrayOf("0", "1", "2", "3", "4", "5", "6", "7", "8", "9")
 
 @Stable
 internal class CardCoordinatesHolder {
@@ -512,11 +525,17 @@ internal fun SongCardTimeDisplay(
     waveSyncState: WaveSyncState?,
     modifier: Modifier = Modifier
 ) {
-    val timeTextStyle = MaterialTheme.typography.labelMedium.copy(
-        fontWeight = FontWeight.Medium,
-        fontSize = 11.5.sp,
-        fontFeatureSettings = "tnum"
-    )
+    val baseLabelMedium = MaterialTheme.typography.labelMedium
+    val timeTextStyle = remember(baseLabelMedium) {
+        baseLabelMedium.copy(
+            fontWeight = FontWeight.Medium,
+            fontSize = 11.5.sp,
+            fontFeatureSettings = "tnum"
+        )
+    }
+    val pipeTextStyle = remember(timeTextStyle) {
+        timeTextStyle.copy(fontWeight = FontWeight.Normal)
+    }
 
     val digitSlotWidth = 7.dp
     val colonSlotWidth = 3.5.dp
@@ -536,13 +555,13 @@ internal fun SongCardTimeDisplay(
         ) {
             for (char in durationText) {
                 when {
-                    char.isDigit() -> {
+                    char in '0'..'9' -> {
                         Box(
                             modifier = Modifier.width(digitSlotWidth),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = char.toString(),
+                                text = DIGIT_STRINGS[char - '0'],
                                 style = timeTextStyle,
                                 color = digitColor,
                                 maxLines = 1
@@ -606,13 +625,13 @@ internal fun SongCardTimeDisplay(
         ) {
             for (char in curTimeText) {
                 when {
-                    char.isDigit() -> {
+                    char in '0'..'9' -> {
                         Box(
                             modifier = Modifier.width(digitSlotWidth),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = char.toString(),
+                                text = DIGIT_STRINGS[char - '0'],
                                 style = timeTextStyle,
                                 color = curDigitColor,
                                 maxLines = 1
@@ -641,7 +660,7 @@ internal fun SongCardTimeDisplay(
             ) {
                 Text(
                     text = "|",
-                    style = timeTextStyle.copy(fontWeight = FontWeight.Normal),
+                    style = pipeTextStyle,
                     color = pipeColor,
                     maxLines = 1
                 )
@@ -649,13 +668,13 @@ internal fun SongCardTimeDisplay(
 
             for (char in totalTimeText) {
                 when {
-                    char.isDigit() -> {
+                    char in '0'..'9' -> {
                         Box(
                             modifier = Modifier.width(digitSlotWidth),
                             contentAlignment = Alignment.Center
                         ) {
                             Text(
-                                text = char.toString(),
+                                text = DIGIT_STRINGS[char - '0'],
                                 style = timeTextStyle,
                                 color = totDigitColor,
                                 maxLines = 1
@@ -676,6 +695,58 @@ internal fun SongCardTimeDisplay(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Icon mở Trang chơi nhạc toàn màn hình, thay thế vị trí tổng thời gian trên thẻ bài hát đang chạy.
+ * Chiều cao 36.dp khớp hoàn toàn với SongCardTimeDisplay để giữ nguyên kích thước thẻ đồng nhất.
+ */
+@Composable
+internal fun SelectedSongOpenPlayerButton(
+    onClick: () -> Unit,
+    tint: Color,
+    containerColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val debouncedClick = rememberDebouncedAction(debounceMs = 200L, onClick = onClick)
+
+    Box(
+        contentAlignment = Alignment.CenterEnd,
+        modifier = modifier
+            .width(42.dp)
+            .height(36.dp)
+            .bottomControlBounce(
+                scaleDown = 0.84f,
+                dipY = 1.dp,
+                interactionSource = interactionSource
+            )
+            .clip(CircleShape)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = debouncedClick
+            )
+    ) {
+        Surface(
+            shape = CircleShape,
+            color = containerColor,
+            contentColor = tint,
+            tonalElevation = 0.dp,
+            shadowElevation = 0.dp,
+            border = null,
+            modifier = Modifier.size(32.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
+                Icon(
+                    imageVector = Icons.Rounded.OpenInFull,
+                    contentDescription = stringResource(R.string.cd_open_player_screen),
+                    tint = tint,
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
     }

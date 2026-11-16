@@ -10,14 +10,18 @@ import android.content.IntentSender
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
+import android.content.res.Resources
 import android.os.Build
 import android.os.Process
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.R
 import com.example.data.LyricsRepository
 import com.example.data.PlaylistRepository
+import com.example.data.SongAudioAnalyzer
 import com.example.data.SongRepository
+import com.example.data.SongSpectrumProfile
 import com.example.data.StorageOpResult
 import com.example.data.local.AppDatabase
 import com.example.model.AudioOutputDevice
@@ -28,6 +32,7 @@ import com.example.model.Playlist
 import com.example.model.Song
 import com.example.service.MusicPlaybackService
 import com.example.service.PlaybackManager
+import com.example.ui.theme.AppLanguage
 import com.example.ui.theme.AppThemeColor
 import com.example.ui.theme.ThemeMode
 import java.util.concurrent.atomic.AtomicBoolean
@@ -55,6 +60,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val lyricsRepository = LyricsRepository(
         context = application,
         lyricsCacheDao = database.lyricsCacheDao()
+    )
+    private val songAudioAnalyzer = SongAudioAnalyzer(
+        appContext = application,
+        scope = viewModelScope
     )
     private val playbackManager = PlaybackManager.getInstance(application)
     private val themePrefs: SharedPreferences = application.getSharedPreferences(PREFS_THEME, Context.MODE_PRIVATE)
@@ -97,6 +106,39 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
     val themeColor: StateFlow<AppThemeColor> = _themeColor.asStateFlow()
 
+    private val _appLanguage = MutableStateFlow(
+        AppLanguage.fromId(themePrefs.getString(KEY_APP_LANGUAGE, AppLanguage.DEFAULT.id))
+    )
+    val appLanguage: StateFlow<AppLanguage> = _appLanguage.asStateFlow()
+
+    private var cachedLocaleLangId: String? = null
+    private var cachedLocaleUiMode: Int = Int.MIN_VALUE
+    private var cachedLocalizedRes: Resources? = null
+
+    private fun localizedResources(): Resources {
+        val app = getApplication<Application>()
+        val lang = _appLanguage.value
+        val baseConfig = app.resources.configuration
+        val uiMode = baseConfig.uiMode
+        val existing = cachedLocalizedRes
+        if (existing != null && cachedLocaleLangId == lang.id && cachedLocaleUiMode == uiMode) {
+            return existing
+        }
+        val config = Configuration(baseConfig).apply {
+            setLocale(lang.toLocale())
+        }
+        val res = app.createConfigurationContext(config).resources
+        cachedLocaleLangId = lang.id
+        cachedLocaleUiMode = uiMode
+        cachedLocalizedRes = res
+        return res
+    }
+
+    private fun localizedString(resId: Int, vararg args: Any): String {
+        val res = localizedResources()
+        return if (args.isEmpty()) res.getString(resId) else res.getString(resId, *args)
+    }
+
     private val _hasSeenOnboarding = MutableStateFlow(
         themePrefs.getBoolean(KEY_HAS_SEEN_ONBOARDING, false)
     )
@@ -122,6 +164,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val lyricsUiState: StateFlow<LyricsUiState> = lyricsRepository.uiState
     val offlineModelState: StateFlow<OfflineModelState> = lyricsRepository.offlineModelState
+    val audioSpectrumProfile: StateFlow<SongSpectrumProfile?> = songAudioAnalyzer.currentProfile
 
     val playlists: StateFlow<List<Playlist>> = playlistRepository
         .observePlaylistsWithSongs(songs)
@@ -159,6 +202,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val isExiting = AtomicBoolean(false)
 
     init {
+        lyricsRepository.setLocale(_appLanguage.value.toLocale())
         checkInitialPermission()
         observePlaylistQueueSync()
         observeCurrentSongForLyrics()
@@ -187,7 +231,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         lyricsJob?.cancel()
         lyricsJob = viewModelScope.launch {
             lyricsRepository.rescanLyrics(currentSong)
-            _userMessage.value = "Đã làm mới lời bài hát"
+            _userMessage.value = localizedString(R.string.toast_lyrics_refreshed)
         }
     }
 
@@ -197,6 +241,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         lyricsJob = viewModelScope.launch {
             lyricsRepository.downloadOfflineModelAndTranscribe(currentSong)
         }
+    }
+
+    fun ensureAudioSpectrumAnalysis(song: Song?, durationMs: Long, positionMs: Long) {
+        songAudioAnalyzer.analyzeForSong(
+            song = song,
+            durationMs = durationMs,
+            initialPositionMs = positionMs
+        )
     }
 
     private fun checkInitialPermission() {
@@ -248,6 +300,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun cycleThemeMode() {
+        setThemeMode(_themeMode.value.next())
+    }
+
     fun toggleTheme() {
         val nextMode = if (isDarkTheme.value) ThemeMode.LIGHT else ThemeMode.DARK
         setThemeMode(nextMode)
@@ -261,6 +317,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_themeColor.value != color) {
             _themeColor.value = color
             themePrefs.edit().putString(KEY_THEME_COLOR_ID, color.id).apply()
+        }
+    }
+
+    fun setAppLanguage(language: AppLanguage) {
+        if (_appLanguage.value != language) {
+            _appLanguage.value = language
+            themePrefs.edit().putString(KEY_APP_LANGUAGE, language.id).apply()
+            lyricsRepository.setLocale(language.toLocale())
+        } else if (!themePrefs.contains(KEY_APP_LANGUAGE)) {
+            themePrefs.edit().putString(KEY_APP_LANGUAGE, language.id).apply()
         }
     }
 
@@ -325,7 +391,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun onPlayPlaylistClicked(playlist: Playlist) {
         if (playlist.songs.isEmpty()) {
-            _userMessage.value = "Danh sách phát này chưa có bài hát nào"
+            _userMessage.value = localizedString(R.string.toast_playlist_empty)
             return
         }
         val current = playbackState.value
@@ -341,23 +407,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playbackManager.playPlaylist(playlist.id, playlist.songs)
     }
 
-    fun createPlaylist(name: String, initialSong: Song? = null) {
+    fun createPlaylist(
+        name: String,
+        iconId: String? = PlaylistIconCatalog.DEFAULT_ICON_ID,
+        initialSong: Song? = null
+    ) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
         viewModelScope.launch {
             runCatching {
-                val newId = playlistRepository.createPlaylist(trimmed)
+                val newId = playlistRepository.createPlaylist(trimmed, iconId)
                 if (initialSong != null) {
                     playlistRepository.addSongToPlaylists(initialSong.id, listOf(newId))
                 }
             }.onSuccess {
                 _userMessage.value = if (initialSong != null) {
-                    "Đã tạo \"$trimmed\" và thêm bài hát"
+                    localizedString(R.string.toast_playlist_created_with_song, trimmed)
                 } else {
-                    "Đã tạo danh sách \"$trimmed\""
+                    localizedString(R.string.toast_playlist_created, trimmed)
                 }
             }.onFailure {
-                _userMessage.value = "Không thể tạo danh sách phát"
+                _userMessage.value = localizedString(R.string.toast_playlist_create_failed)
             }
         }
     }
@@ -378,9 +448,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 playlistRepository.renamePlaylist(playlist.id, trimmed)
             }.onSuccess {
-                _userMessage.value = "Đã đổi tên thành \"$trimmed\""
+                _userMessage.value = localizedString(R.string.toast_playlist_renamed, trimmed)
             }.onFailure {
-                _userMessage.value = "Không thể đổi tên danh sách phát"
+                _userMessage.value = localizedString(R.string.toast_playlist_rename_failed)
+            }
+        }
+    }
+
+    fun updatePlaylistIcon(playlist: Playlist, iconId: String?) {
+        if (playlist.iconId == iconId) return
+        viewModelScope.launch {
+            runCatching {
+                playlistRepository.updatePlaylistIcon(playlist.id, iconId)
             }
         }
     }
@@ -399,9 +478,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 playlistRepository.deletePlaylist(playlist.id)
             }.onSuccess {
-                _userMessage.value = "Đã xóa danh sách \"${playlist.name}\""
+                _userMessage.value = localizedString(R.string.toast_playlist_deleted, playlist.name)
             }.onFailure {
-                _userMessage.value = "Không thể xóa danh sách phát"
+                _userMessage.value = localizedString(R.string.toast_playlist_delete_failed)
             }
         }
     }
@@ -413,12 +492,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 playlistRepository.addSongToPlaylists(song.id, playlistIds)
             }.onSuccess {
                 _userMessage.value = if (playlistIds.size == 1) {
-                    "Đã thêm bài hát vào danh sách phát"
+                    localizedString(R.string.toast_added_to_playlist_one)
                 } else {
-                    "Đã thêm bài hát vào ${playlistIds.size} danh sách phát"
+                    localizedString(R.string.toast_added_to_playlists_many, playlistIds.size)
                 }
             }.onFailure {
-                _userMessage.value = "Không thể thêm vào danh sách phát"
+                _userMessage.value = localizedString(R.string.toast_add_to_playlist_failed)
             }
         }
     }
@@ -429,9 +508,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 playlistRepository.addSongsToPlaylist(playlist.id, songIds)
             }.onSuccess {
-                _userMessage.value = "Đã thêm ${songIds.size} bài hát vào \"${playlist.name}\""
+                _userMessage.value = localizedString(R.string.toast_added_songs_to_playlist, songIds.size, playlist.name)
             }.onFailure {
-                _userMessage.value = "Không thể thêm bài hát vào danh sách"
+                _userMessage.value = localizedString(R.string.toast_add_songs_failed)
             }
         }
     }
@@ -441,9 +520,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             runCatching {
                 playlistRepository.removeSongFromPlaylist(playlist.id, song.id)
             }.onSuccess {
-                _userMessage.value = "Đã gỡ khỏi \"${playlist.name}\""
+                _userMessage.value = localizedString(R.string.toast_removed_from_playlist, playlist.name)
             }.onFailure {
-                _userMessage.value = "Không thể gỡ bài hát khỏi danh sách"
+                _userMessage.value = localizedString(R.string.toast_remove_from_playlist_failed)
             }
         }
     }
@@ -460,9 +539,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         playbackManager.toggleAudioOutputDevice()
         val currentDevice = playbackState.value.outputDevice
         _userMessage.value = if (currentDevice == AudioOutputDevice.SPEAKER) {
-            "Đã chuyển sang phát qua loa điện thoại"
+            localizedString(R.string.toast_output_speaker)
         } else {
-            "Đã chuyển sang phát qua tai nghe"
+            localizedString(R.string.toast_output_headphones)
         }
     }
 
@@ -484,7 +563,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             op?.invoke() ?: refreshSongs()
         } else {
             pendingOperation = null
-            _userMessage.value = "Thao tác đã bị hủy"
+            _userMessage.value = localizedString(R.string.toast_action_cancelled)
         }
     }
 
@@ -517,7 +596,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         playbackManager.onSongRenamed(song.id, finalFileName)
                         delay(200)
                         playbackManager.setSongs(repository.loadSongsOnce())
-                        _userMessage.value = "Đã đổi tên bài hát thành công"
+                        _userMessage.value = localizedString(R.string.toast_rename_success)
                     }
                     is StorageOpResult.RequiresUserConsent -> {
                         pendingOperation = {
@@ -528,9 +607,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                         playbackManager.onSongRenamed(song.id, finalFileName)
                                         delay(300)
                                         playbackManager.setSongs(repository.loadSongsOnce())
-                                        _userMessage.value = "Đã đổi tên bài hát thành công"
+                                        _userMessage.value = localizedString(R.string.toast_rename_success)
                                     } else if (opResult is StorageOpResult.Failure) {
-                                        _userMessage.value = "Không thể đổi tên: ${opResult.message}"
+                                        _userMessage.value = localizedString(R.string.toast_rename_failed_reason, opResult.message)
                                     }
                                 }
                             }
@@ -538,7 +617,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         _permissionIntentSender.value = result.intentSender
                     }
                     is StorageOpResult.Failure -> {
-                        _userMessage.value = "Không thể đổi tên: ${result.message}"
+                        _userMessage.value = localizedString(R.string.toast_rename_failed_reason, result.message)
                     }
                 }
             }
@@ -553,7 +632,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         playlistRepository.removeSongFromAllPlaylists(song.id)
                         playbackManager.onSongDeleted(song.id)
                         playbackManager.setSongs(repository.loadSongsOnce())
-                        _userMessage.value = "Đã xóa bài hát"
+                        _userMessage.value = localizedString(R.string.toast_delete_success)
                     }
                     is StorageOpResult.RequiresUserConsent -> {
                         pendingOperation = {
@@ -563,14 +642,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                     playbackManager.onSongDeleted(song.id)
                                     delay(200)
                                     playbackManager.setSongs(repository.loadSongsOnce())
-                                    _userMessage.value = "Đã xóa bài hát"
+                                    _userMessage.value = localizedString(R.string.toast_delete_success)
                                 }
                             }
                         }
                         _permissionIntentSender.value = result.intentSender
                     }
                     is StorageOpResult.Failure -> {
-                        _userMessage.value = "Không thể xóa bài hát: ${result.message}"
+                        _userMessage.value = localizedString(R.string.toast_delete_failed_reason, result.message)
                     }
                 }
             }
@@ -603,6 +682,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_IS_DARK = "pref_is_dark_theme"
         const val KEY_THEME_MODE = "pref_theme_mode"
         private const val KEY_THEME_COLOR_ID = "pref_theme_color_id"
+        const val KEY_APP_LANGUAGE = "pref_app_language"
         const val KEY_HAS_SEEN_ONBOARDING = "has_seen_onboarding"
         const val KEY_PLAYER_PILL_COLLAPSED = "pref_player_pill_collapsed"
     }

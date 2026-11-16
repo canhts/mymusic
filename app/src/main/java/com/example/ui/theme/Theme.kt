@@ -1,5 +1,6 @@
 package com.example.ui.theme
 
+import android.content.res.Configuration
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
@@ -9,6 +10,10 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 
 // ==========================================
@@ -309,24 +314,63 @@ fun getAppColorScheme(themeColor: AppThemeColor, darkTheme: Boolean): ColorSchem
     }
 }
 
+val LocalAppLanguage = compositionLocalOf { AppLanguage.DEFAULT }
+
+/**
+ * Cung cấp [LocalContext] và [LocalConfiguration] đã gắn [appLanguage] cho toàn bộ cây con,
+ * kể cả các cửa sổ con như ModalBottomSheet hoặc AlertDialog vốn tự tạo AndroidComposeView riêng.
+ */
+@Composable
+fun LocalizedAppScope(
+    appLanguage: AppLanguage = LocalAppLanguage.current,
+    content: @Composable () -> Unit
+) {
+    val currentContext = LocalContext.current
+    val unwrappedBase = remember(currentContext) {
+        if (currentContext is LocalizedContextWrapper) currentContext.baseContext else currentContext
+    }
+    val baseConfiguration = LocalConfiguration.current
+
+    val localizedConfig = remember(baseConfiguration, appLanguage) {
+        Configuration(baseConfiguration).apply {
+            setLocale(appLanguage.toLocale())
+        }
+    }
+    val localizedContext = remember(unwrappedBase, localizedConfig) {
+        val configContext = unwrappedBase.createConfigurationContext(localizedConfig)
+        LocalizedContextWrapper(unwrappedBase, configContext.resources)
+    }
+
+    CompositionLocalProvider(
+        LocalAppLanguage provides appLanguage,
+        LocalContext provides localizedContext,
+        LocalConfiguration provides localizedConfig,
+        content = content
+    )
+}
+
 @Composable
 fun MyApplicationTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     themeColor: AppThemeColor = AppThemeColor.DEFAULT,
+    appLanguage: AppLanguage = AppLanguage.DEFAULT,
     dynamicColor: Boolean = false,
     content: @Composable () -> Unit
 ) {
+    val baseContext = LocalContext.current
+
     val colorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
-            val context = LocalContext.current
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+            if (darkTheme) dynamicDarkColorScheme(baseContext) else dynamicLightColorScheme(baseContext)
         }
         else -> getAppColorScheme(themeColor = themeColor, darkTheme = darkTheme)
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content
-    )
+    LocalizedAppScope(appLanguage = appLanguage) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            content = content
+        )
+    }
 }

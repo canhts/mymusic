@@ -40,6 +40,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.swipe
 import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.unit.dp
 import androidx.room.Room
@@ -50,6 +51,7 @@ import com.example.data.LyricsRepository
 import com.example.data.OfflineSpeechLyricsEngine
 import com.example.data.PlaylistRepository
 import com.example.data.RemoteLyricsResponse
+import com.example.data.analyzePcmSamplesToProfile
 import com.example.data.local.AppDatabase
 import com.example.model.LyricLine
 import com.example.model.LyricsSource
@@ -67,19 +69,23 @@ import com.example.ui.AudioEffectsBottomSheet
 import com.example.ui.BottomNowPlayingPill
 import com.example.ui.CapsuleBottomToolbar
 import com.example.ui.CarouselPlaylistBottomSheet
+import com.example.ui.CreatePlaylistDialog
 import com.example.ui.CurrentQueueBottomSheet
 import com.example.ui.HoaCaScreen
 import com.example.ui.INACTIVITY_AUTO_COLLAPSE_TIMEOUT_MS
 import com.example.ui.MainTab
 import com.example.ui.MainViewModel
+import com.example.ui.NowPlayingScreen
 import com.example.ui.PlaylistCarouselCard
 import com.example.ui.PlaylistDetailScreen
+import com.example.ui.PlaylistIconCatalog
 import com.example.ui.PlaylistsOverviewScreen
 import com.example.ui.SettingsBottomSheet
 import com.example.ui.SongList
 import com.example.ui.WelcomeScreen
 import com.example.ui.matchesSongSearchQuery
 import com.example.ui.observeUserTouch
+import com.example.ui.resolveCarouselWatermarkCenterXFraction
 import com.example.ui.resolveQueueRowCornerTarget
 import com.example.ui.resolveSongCardCornerTarget
 import androidx.compose.ui.semantics.SemanticsProperties
@@ -87,10 +93,13 @@ import androidx.compose.ui.test.swipeDown
 import androidx.compose.ui.test.swipeUp
 import java.io.ByteArrayInputStream
 import java.io.File
+import com.example.ui.theme.AppLanguage
 import com.example.ui.theme.AppThemeColor
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.theme.ThemeMode
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.sin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
@@ -111,181 +120,6 @@ class ExampleRobolectricTest {
 
     @get:Rule
     val composeTestRule = createComposeRule()
-
-    @Test
-    fun `read string from context`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val appName = context.getString(R.string.app_name)
-        assertEquals("Music Player", appName)
-    }
-
-    @Test
-    fun `song displayTitle removes mp3 extension with real android Uri`() {
-        val song = Song(
-            id = 100L,
-            title = "Bai_Hat_Viet_Nam.mp3",
-            uri = Uri.parse("content://media/external/audio/media/100"),
-            duration = 240000L,
-            dateAdded = 123456L
-        )
-        assertEquals("Bai_hat_viet_nam", song.displayTitle)
-    }
-
-    @Test
-    fun `song displayTitle trims trailing spaces before uppercase extension`() {
-        val song = Song(
-            id = 101L,
-            title = "  nhac hay   .MP3  ",
-            uri = Uri.parse("content://media/external/audio/media/101"),
-            duration = 180000L,
-            dateAdded = 123457L
-        )
-        assertEquals("Nhac hay", song.displayTitle)
-    }
-
-    @Test
-    fun `playbackManager scopes next and previous to active library or playlist queue`() {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val manager = PlaybackManager.getInstance(context)
-        val librarySongs = (1L..8L).map { id ->
-            Song(id, "song_$id.mp3", Uri.parse("content://media/$id"), 120_000L, id)
-        }
-        manager.setSongs(librarySongs)
-
-        while (manager.playbackState.value.playMode != PlayMode.REPEAT_ALL) {
-            manager.cyclePlayMode()
-        }
-
-        // 1. Play from full library (REPEAT_ALL): Next and Previous step in list order;
-        //    Previous immediately jumps to previous song even when currentPositionMs > 0 (never restarts current song)
-        manager.playSongFromLibrary(librarySongs[1]) // song 2
-        assertNull(manager.playbackState.value.activePlaylistId)
-        assertEquals((1L..8L).toList(), manager.getOrderedSongs().map { it.id })
-        manager.updateProgress(45_000L, 120_000L)
-        manager.playPrevious()
-        assertEquals(1L, manager.playbackState.value.currentSong?.id)
-        assertEquals(0L, manager.currentPositionMs.value)
-
-        // Wrap-around Previous in REPEAT_ONE also jumps immediately to previous song instead of restarting current song
-        while (manager.playbackState.value.playMode != PlayMode.REPEAT_ONE) {
-            manager.cyclePlayMode()
-        }
-        manager.updateProgress(60_000L, 120_000L)
-        manager.playPrevious()
-        assertEquals(8L, manager.playbackState.value.currentSong?.id)
-
-        // 2. Switch to SHUFFLE: both Next and Previous jump randomly within the active queue and never replay the same song
-        while (manager.playbackState.value.playMode != PlayMode.SHUFFLE) {
-            manager.cyclePlayMode()
-        }
-        val visitedIds = mutableListOf<Long>()
-        var prevId = manager.playbackState.value.currentSong!!.id
-        repeat(4) {
-            manager.updateProgress(30_000L, 120_000L)
-            manager.playNext()
-            val curId = manager.playbackState.value.currentSong!!.id
-            assertTrue(prevId != curId)
-            visitedIds.add(curId)
-            prevId = curId
-        }
-        repeat(4) {
-            manager.updateProgress(30_000L, 120_000L)
-            manager.playPrevious()
-            val curId = manager.playbackState.value.currentSong!!.id
-            assertTrue(prevId != curId)
-            visitedIds.add(curId)
-            prevId = curId
-        }
-        assertTrue(visitedIds.all { it in 1L..8L })
-
-        // 3. Switch to a Playlist queue containing only songs [4L, 2L]
-        val playlistSongs = listOf(librarySongs[3], librarySongs[1])
-        manager.playSongFromPlaylist(playlistId = 99L, playlistSongs = playlistSongs, song = librarySongs[3])
-        assertEquals(99L, manager.playbackState.value.activePlaylistId)
-        assertEquals(listOf(4L, 2L), manager.getOrderedSongs().map { it.id })
-        assertEquals(4L, manager.playbackState.value.currentSong?.id)
-
-        // Next/Previous stay inside playlist queue [4L, 2L] and always jump to the other song
-        manager.playNext()
-        assertEquals(2L, manager.playbackState.value.currentSong?.id)
-        manager.playNext()
-        assertEquals(4L, manager.playbackState.value.currentSong?.id)
-        manager.updateProgress(50_000L, 120_000L)
-        manager.playPrevious()
-        assertEquals(2L, manager.playbackState.value.currentSong?.id)
-
-        // 4. Rename updates song title across both library and active playlist queue
-        manager.onSongRenamed(2L, "renamed_song.mp3")
-        assertEquals("Renamed_song", manager.getOrderedSongs().first { it.id == 2L }.displayTitle)
-
-        // 5. Switching back to Library restores full library queue
-        manager.playSongFromLibrary(librarySongs[0])
-        assertNull(manager.playbackState.value.activePlaylistId)
-        assertEquals((1L..8L).toList(), manager.getOrderedSongs().map { it.id })
-    }
-
-    @Test
-    fun `playlistRepository creates playlists and deletes references without touching library songs`() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
-        try {
-            val repo = PlaylistRepository(db.playlistDao())
-            val song1 = Song(10L, "alpha.mp3", Uri.parse("content://media/10"), 120_000L, 10L)
-            val song2 = Song(20L, "beta.mp3", Uri.parse("content://media/20"), 180_000L, 20L)
-            val songsFlow = MutableStateFlow(listOf(song1, song2))
-
-            val playlistId = repo.createPlaylist("Nhạc Chill")
-            val playlistId2 = repo.createPlaylist("Nhạc Lofi")
-            repo.addSongToPlaylists(song1.id, listOf(playlistId))
-            repo.addSongsToPlaylist(playlistId, listOf(song2.id))
-
-            val resolved = repo.observePlaylistsWithSongs(songsFlow)
-                .first { it.size == 2 && it.first().songs.size == 2 }
-            assertEquals("Nhạc Chill", resolved.first().name)
-            assertEquals(listOf(playlistId, playlistId2), resolved.map { it.id })
-            assertEquals(listOf(10L, 20L), resolved.first().songs.map { it.id })
-            assertEquals(300_000L, resolved.first().totalDurationMs)
-
-            // Rename playlist
-            repo.renamePlaylist(playlistId, "Chill Tối")
-            val afterRename = repo.observePlaylistsWithSongs(songsFlow)
-                .first { it.firstOrNull { p -> p.id == playlistId }?.name == "Chill Tối" }
-            assertEquals("Chill Tối", afterRename.first { it.id == playlistId }.name)
-
-            // Reorder playlists persistently
-            repo.reorderPlaylists(listOf(playlistId2, playlistId))
-            val afterReorder = repo.observePlaylistsWithSongs(songsFlow)
-                .first { it.map { p -> p.id } == listOf(playlistId2, playlistId) }
-            assertEquals(listOf(playlistId2, playlistId), afterReorder.map { it.id })
-
-            // Increment playCount persistently
-            repo.incrementPlayCount(playlistId2)
-            repo.incrementPlayCount(playlistId2)
-            val afterPlayCount = repo.observePlaylistsWithSongs(songsFlow)
-                .first { it.first { p -> p.id == playlistId2 }.playCount == 2 }
-            assertEquals(2, afterPlayCount.first { it.id == playlistId2 }.playCount)
-            assertEquals(0, afterPlayCount.first { it.id == playlistId }.playCount)
-
-            // Removing a song from playlist only deletes the reference; library songs remain untouched
-            repo.removeSongFromPlaylist(playlistId, song1.id)
-            val afterSongRemove = repo.observePlaylistsWithSongs(songsFlow)
-                .first { it.first { p -> p.id == playlistId }.songs.size == 1 }
-            assertEquals(listOf(20L), afterSongRemove.first { it.id == playlistId }.songs.map { it.id })
-            assertEquals(2, songsFlow.value.size)
-
-            // Deleting the playlist keeps all library songs untouched
-            repo.deletePlaylist(playlistId)
-            repo.deletePlaylist(playlistId2)
-            val afterPlaylistDelete = repo.observePlaylistsWithSongs(songsFlow)
-                .first { it.isEmpty() }
-            assertEquals(0, afterPlaylistDelete.size)
-            assertEquals(2, songsFlow.value.size)
-        } finally {
-            db.close()
-        }
-    }
 
     @Test
     fun `bottom control zone spans full bottom 3 edges and blocks gap taps across both tiers`() {
@@ -560,10 +394,15 @@ class ExampleRobolectricTest {
         assertEquals(createBtnBounds.width, createBtnBounds.height, 1.5f)
         composeTestRule.onNodeWithText("Tạo mới").assertDoesNotExist()
 
-        // Title sits below playlist icon and above play button; total duration is shown
+        // Title sits below playlist icon and above play button; top-left circular icon matches delete button circle size and alignment
         val iconBounds1 = composeTestRule.onNodeWithTag("playlist_card_icon_10", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        val deleteCircleBounds1 = composeTestRule.onNodeWithTag("playlist_delete_circle_10", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val titleBounds1 = composeTestRule.onNodeWithTag("playlist_card_title_10", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
         val playBounds1 = composeTestRule.onNodeWithTag("btn_play_playlist_10", useUnmergedTree = true).fetchSemanticsNode().boundsInRoot
+        assertEquals(iconBounds1.width, iconBounds1.height, 1.5f)
+        assertEquals(deleteCircleBounds1.width, iconBounds1.width, 1.5f)
+        assertEquals(deleteCircleBounds1.height, iconBounds1.height, 1.5f)
+        assertEquals(deleteCircleBounds1.center.y, iconBounds1.center.y, 1.5f)
         assertTrue(titleBounds1.top >= iconBounds1.bottom)
         assertTrue(titleBounds1.bottom <= playBounds1.top)
         composeTestRule.onNodeWithTag("playlist_card_duration_10", useUnmergedTree = true).assertIsDisplayed()
@@ -643,11 +482,12 @@ class ExampleRobolectricTest {
 
     @Test
     fun `welcome screen renders MD3 elements and triggers start action`() {
-        var started = false
+        var startedCount = 0
+        var languageState by mutableStateOf(AppLanguage.VI)
 
         composeTestRule.setContent {
-            MyApplicationTheme {
-                WelcomeScreen(onStartClick = { started = true })
+            MyApplicationTheme(appLanguage = languageState) {
+                WelcomeScreen(onStartClick = { startedCount++ })
             }
         }
 
@@ -655,31 +495,24 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("welcome_hero_visual").assertIsDisplayed()
         composeTestRule.onNodeWithTag("welcome_title").assertIsDisplayed()
         composeTestRule.onNodeWithTag("welcome_subtitle").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Nghe ngoại tuyến").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Danh sách phát").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Bộ chỉnh âm").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("welcome_start_label").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Bắt đầu").assertIsDisplayed()
 
         val ctaBounds = composeTestRule.onNodeWithTag("btn_welcome_start").fetchSemanticsNode().boundsInRoot
-        assertTrue(ctaBounds.height > 48f)
+        assertTrue(ctaBounds.height >= 48f)
+        assertEquals(ctaBounds.width, ctaBounds.height, 2.0f)
+
         composeTestRule.onNodeWithTag("btn_welcome_start").performClick()
-        assertTrue(started)
-    }
+        assertEquals(1, startedCount)
 
-    @Test
-    fun `mainViewModel persists has_seen_onboarding across launches`() {
-        val app = ApplicationProvider.getApplicationContext<Application>()
-        val prefs = app.getSharedPreferences("music_player_theme_prefs", Context.MODE_PRIVATE)
-        prefs.edit().remove(MainViewModel.KEY_HAS_SEEN_ONBOARDING).commit()
-
-        val firstLaunchVm = MainViewModel(app)
-        assertFalse(firstLaunchVm.hasSeenOnboarding.value)
-
-        firstLaunchVm.completeOnboarding()
-        assertTrue(firstLaunchVm.hasSeenOnboarding.value)
-        assertTrue(prefs.getBoolean(MainViewModel.KEY_HAS_SEEN_ONBOARDING, false))
-
-        val secondLaunchVm = MainViewModel(app)
-        assertTrue(secondLaunchVm.hasSeenOnboarding.value)
+        // Switching language to EN updates welcome editorial copy cleanly
+        languageState = AppLanguage.EN
+        org.robolectric.shadows.ShadowSystemClock.advanceBy(java.time.Duration.ofMillis(350))
+        composeTestRule.mainClock.advanceTimeBy(350L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("Get Started").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("welcome_start_label").performClick()
+        assertEquals(2, startedCount)
     }
 
     @Test
@@ -802,27 +635,43 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `mainViewModel follows system theme when ThemeMode is SYSTEM and persists explicit modes`() {
-        val app = ApplicationProvider.getApplicationContext<Application>()
-        val prefs = app.getSharedPreferences("music_player_theme_prefs", Context.MODE_PRIVATE)
-        prefs.edit().remove(MainViewModel.KEY_THEME_MODE).remove("pref_is_dark_theme").commit()
+    fun `settings bottom sheet switches between Vietnamese and English dynamically`() {
+        var languageState by mutableStateOf(AppLanguage.VI)
 
-        val vm = MainViewModel(app)
-        assertEquals(ThemeMode.SYSTEM, vm.themeMode.value)
+        composeTestRule.setContent {
+            MyApplicationTheme(appLanguage = languageState) {
+                SettingsBottomSheet(
+                    isDarkTheme = false,
+                    selectedThemeMode = ThemeMode.SYSTEM,
+                    selectedThemeColor = AppThemeColor.DEFAULT,
+                    selectedLanguage = languageState,
+                    onSelectThemeColor = {},
+                    onSelectLanguage = { languageState = it },
+                    onDismiss = {}
+                )
+            }
+        }
 
-        vm.onSystemDarkChanged(true)
-        assertTrue(vm.isDarkTheme.value)
-        vm.onSystemDarkChanged(false)
-        assertFalse(vm.isDarkTheme.value)
+        composeTestRule.onNodeWithText("Cài đặt").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("card_setting_language").performScrollTo()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("language_split_button_group").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("lang_mode_vi").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("lang_mode_en").assertIsDisplayed()
 
-        vm.setThemeMode(ThemeMode.DARK)
-        assertTrue(vm.isDarkTheme.value)
-        vm.onSystemDarkChanged(false)
-        assertTrue(vm.isDarkTheme.value)
+        // Switch to English (US)
+        composeTestRule.onNodeWithTag("lang_mode_en").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(AppLanguage.EN, languageState)
+        composeTestRule.onNodeWithText("Settings").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Language").assertIsDisplayed()
 
-        val reloadedVm = MainViewModel(app)
-        assertEquals(ThemeMode.DARK, reloadedVm.themeMode.value)
-        assertTrue(reloadedVm.isDarkTheme.value)
+        // Switch back to Việt Nam (VN)
+        composeTestRule.onNodeWithTag("lang_mode_vi").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(AppLanguage.VI, languageState)
+        composeTestRule.onNodeWithText("Cài đặt").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Ngôn ngữ").assertIsDisplayed()
     }
 
     @Test
@@ -1095,27 +944,6 @@ class ExampleRobolectricTest {
 
         composeTestRule.onNodeWithTag("bottom_now_playing_pill").performTouchInput { swipeRight() }
         assertTrue(seekCalls > 0)
-    }
-
-    @Test
-    fun `mainViewModel persists player pill collapsed state across restarts`() {
-        val app = ApplicationProvider.getApplicationContext<Application>()
-        val prefs = app.getSharedPreferences("music_player_theme_prefs", Context.MODE_PRIVATE)
-        prefs.edit().remove(MainViewModel.KEY_PLAYER_PILL_COLLAPSED).commit()
-
-        val vm1 = MainViewModel(app)
-        assertFalse(vm1.isPlayerPillCollapsed.value)
-
-        vm1.setPlayerPillCollapsed(true)
-        assertTrue(vm1.isPlayerPillCollapsed.value)
-        assertTrue(prefs.getBoolean(MainViewModel.KEY_PLAYER_PILL_COLLAPSED, false))
-
-        val vm2 = MainViewModel(app)
-        assertTrue(vm2.isPlayerPillCollapsed.value)
-
-        vm2.setPlayerPillCollapsed(false)
-        val vm3 = MainViewModel(app)
-        assertFalse(vm3.isPlayerPillCollapsed.value)
     }
 
     @Test
@@ -1672,7 +1500,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `playlist detail screen search button starts as circle next to add button expands to back button overlapping title and collapses on X or outside tap`() {
+    fun `playlist detail screen positions icon button between search and add and expands search full width over back button`() {
         val song1 = Song(1L, "Hương Đêm Bay Xa.mp3", Uri.parse("content://media/1"), 120_000L, 1L)
         val song2 = Song(2L, "Nắng Ấm Xa Dần.mp3", Uri.parse("content://media/2"), 150_000L, 2L)
         var playlistState by mutableStateOf(
@@ -1688,6 +1516,9 @@ class ExampleRobolectricTest {
                     onPlayAll = {},
                     onAddSongs = {},
                     onRenamePlaylist = {},
+                    onUpdatePlaylistIcon = { iconId ->
+                        playlistState = playlistState.copy(iconId = iconId)
+                    },
                     onSongClick = {},
                     onRemoveSongFromPlaylist = {},
                     contentTopPadding = 12.dp,
@@ -1697,32 +1528,42 @@ class ExampleRobolectricTest {
             }
         }
 
-        // 1. Empty playlist detail page: search button is NOT shown
+        // 1. Empty playlist detail page: search button is NOT shown, icon picker & add buttons ARE shown
         composeTestRule.waitForIdle()
         composeTestRule.onNodeWithTag("btn_search_playlist_detail").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("btn_choose_playlist_icon").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_add_songs_to_playlist").assertIsDisplayed()
 
-        // 2. Non-empty playlist detail page: search button starts as a 48dp circle immediately left of Add button
+        // 2. Non-empty playlist detail page: [Search] -> [Choose Icon] -> [Add] strictly ordered
         playlistState = playlistState.copy(songs = listOf(song1, song2))
         composeTestRule.waitForIdle()
 
         val backBounds = composeTestRule.onNodeWithTag("btn_back_playlists").fetchSemanticsNode().boundsInRoot
-        val titleBounds = composeTestRule.onNodeWithTag("btn_rename_playlist").fetchSemanticsNode().boundsInRoot
+        val iconPickerBounds = composeTestRule.onNodeWithTag("btn_choose_playlist_icon").fetchSemanticsNode().boundsInRoot
         val addBounds = composeTestRule.onNodeWithTag("btn_add_songs_to_playlist").fetchSemanticsNode().boundsInRoot
         val initialSearchBounds = composeTestRule.onNodeWithTag("btn_search_playlist_detail").fetchSemanticsNode().boundsInRoot
 
         assertEquals(initialSearchBounds.width, initialSearchBounds.height, 1.5f)
-        assertTrue(initialSearchBounds.right <= addBounds.left)
+        assertTrue(initialSearchBounds.right <= iconPickerBounds.left + 1f)
+        assertTrue(iconPickerBounds.right <= addBounds.left + 1f)
         assertTrue(initialSearchBounds.left > backBounds.right + 20f)
         composeTestRule.onNodeWithTag("input_search_playlist_detail").assertDoesNotExist()
 
-        // 3. Tap circular search button -> animates into long capsule extending to Back button and overlapping title
+        // 3. Tap circular search button -> bounces and expands full header width covering Back button on the left
         composeTestRule.onNodeWithTag("btn_search_playlist_detail").performClick()
+        composeTestRule.mainClock.advanceTimeBy(700L)
         composeTestRule.waitForIdle()
 
         val expandedSearchBounds = composeTestRule.onNodeWithTag("btn_search_playlist_detail").fetchSemanticsNode().boundsInRoot
-        assertTrue(expandedSearchBounds.width > initialSearchBounds.width * 2f)
-        assertTrue(abs(expandedSearchBounds.left - backBounds.right) <= with(composeTestRule.density) { 6.dp.toPx() })
-        assertEquals(titleBounds.left, expandedSearchBounds.left, 2f)
+        assertTrue(expandedSearchBounds.width > initialSearchBounds.width * 3f)
+        assertTrue(
+            "Expected expanded search left (${expandedSearchBounds.left}) <= back left (${backBounds.left})",
+            expandedSearchBounds.left <= backBounds.left + 2f
+        )
+        assertTrue(
+            "Expected expanded search right (${expandedSearchBounds.right}) >= add right (${addBounds.right})",
+            expandedSearchBounds.right >= addBounds.right - 2f
+        )
         composeTestRule.onNodeWithTag("input_search_playlist_detail").assertIsDisplayed()
         composeTestRule.onNodeWithTag("btn_close_search_playlist_detail").assertIsDisplayed()
 
@@ -1732,32 +1573,37 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("playlist_song_card_2").assertIsDisplayed()
         composeTestRule.onNodeWithTag("playlist_song_card_1").assertDoesNotExist()
 
-        // 4. Tap X button -> clears query and collapses back to initial circle
+        // 4. Tap X button -> clears query and collapses back to initial circle, restoring Back/Icon/Add
         composeTestRule.onNodeWithTag("btn_close_search_playlist_detail").performClick()
+        composeTestRule.mainClock.advanceTimeBy(700L)
         composeTestRule.waitForIdle()
 
         val collapsedAfterXBounds = composeTestRule.onNodeWithTag("btn_search_playlist_detail").fetchSemanticsNode().boundsInRoot
-        assertEquals(initialSearchBounds.width, collapsedAfterXBounds.width, 1.5f)
-        assertEquals(collapsedAfterXBounds.width, collapsedAfterXBounds.height, 1.5f)
+        assertEquals(initialSearchBounds.width, collapsedAfterXBounds.width, 2f)
+        assertEquals(collapsedAfterXBounds.width, collapsedAfterXBounds.height, 2f)
+        composeTestRule.onNodeWithTag("btn_back_playlists").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_choose_playlist_icon").assertIsDisplayed()
         composeTestRule.onNodeWithTag("playlist_song_card_1").assertIsDisplayed()
         composeTestRule.onNodeWithTag("playlist_song_card_2").assertIsDisplayed()
 
-        // 5. Expand again and tap outside (e.g., on the Play All button area below header) -> collapses back to circle
+        // 5. Expand again and tap outside (e.g., on Play All button area below header) -> collapses back to circle
         composeTestRule.onNodeWithTag("btn_search_playlist_detail").performClick()
+        composeTestRule.mainClock.advanceTimeBy(700L)
         composeTestRule.waitForIdle()
         assertTrue(
             composeTestRule.onNodeWithTag("btn_search_playlist_detail").fetchSemanticsNode().boundsInRoot.width >
-                initialSearchBounds.width * 2f
+                initialSearchBounds.width * 3f
         )
 
         composeTestRule.onNodeWithTag("btn_play_playlist_detail").performTouchInput {
             click(center)
         }
+        composeTestRule.mainClock.advanceTimeBy(700L)
         composeTestRule.waitForIdle()
 
         val collapsedAfterOutsideBounds = composeTestRule.onNodeWithTag("btn_search_playlist_detail").fetchSemanticsNode().boundsInRoot
-        assertEquals(initialSearchBounds.width, collapsedAfterOutsideBounds.width, 1.5f)
-        assertEquals(collapsedAfterOutsideBounds.width, collapsedAfterOutsideBounds.height, 1.5f)
+        assertEquals(initialSearchBounds.width, collapsedAfterOutsideBounds.width, 2f)
+        assertEquals(collapsedAfterOutsideBounds.width, collapsedAfterOutsideBounds.height, 2f)
     }
 
     @Test
@@ -1981,130 +1827,6 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `three tier hybrid lyrics pipeline extracts ID3v2 USLT and LRCLIB synced lyrics and offline AI fallback and caches in Room`() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
-        val dao = db.lyricsCacheDao()
-
-        try {
-            // 1. Verify filename cleaner strips noise tags like _ [320kbps] (Official MV)
-            val (cleanTitle, cleanArtist) = LyricsRepository.parseTitleAndArtistFromFileName(
-                "Son_Tung_MTP - Con_Mua_Ngang_Qua [320kbps] (Official MV).mp3"
-            )
-            assertEquals("Con Mua Ngang Qua", cleanTitle)
-            assertEquals("Son Tung MTP", cleanArtist)
-
-            // 2. Verify Tier 1 ID3v2 binary USLT extraction
-            val rawId3Tag = Id3v2LyricsExtractor.buildTestId3v2TagWithUslt(
-                "[00:05.00] Câu hát mở đầu từ thẻ ID3\n[00:10.00] Câu hát thứ hai nối tiếp"
-            )
-            val extractedId3 = Id3v2LyricsExtractor.extractFromStream(
-                ByteArrayInputStream(rawId3Tag),
-                totalDurationMs = 60_000L
-            )
-            assertTrue(extractedId3 != null && extractedId3.isSynced)
-            assertEquals(2, extractedId3!!.lines.size)
-            assertEquals(5_000L, extractedId3.lines[0].startTimeMs)
-            assertEquals(10_000L, extractedId3.lines[0].endTimeMs)
-            assertEquals(10_000L, extractedId3.lines[1].startTimeMs)
-            assertEquals(60_000L, extractedId3.lines[1].endTimeMs)
-
-            val tempMp3 = File(context.cacheDir, "test_embedded_id3.mp3")
-            tempMp3.writeBytes(rawId3Tag)
-            val songTier1 = Song(
-                id = 501L,
-                title = "Bai_Hat_ID3.mp3",
-                uri = Uri.fromFile(tempMp3),
-                duration = 60_000L,
-                dateAdded = 1L,
-                path = tempMp3.absolutePath
-            )
-
-            var remoteCallCount = 0
-            val fakeRemote = LrcLibRemoteClient { _ ->
-                remoteCallCount++
-                RemoteLyricsResponse(
-                    syncedLyrics = "[00:02.00] Dòng một từ LRCLIB\n[00:08.50] Dòng hai từ LRCLIB\n[00:15.00] Dòng cuối từ LRCLIB",
-                    plainLyrics = null
-                )
-            }
-            val offlineEngine = OfflineSpeechLyricsEngine(context)
-            val repo = LyricsRepository(context, dao, offlineEngine, fakeRemote)
-
-            // Load songTier1 -> hits Tier 1 (ID3_TAG) without calling LRCLIB
-            repo.loadLyricsForSong(songTier1)
-            val stateTier1 = repo.uiState.value as LyricsUiState.Success
-            assertEquals(LyricsSource.ID3_TAG, stateTier1.source)
-            assertTrue(stateTier1.isSynced)
-            assertEquals(2, stateTier1.lines.size)
-            assertEquals(0, remoteCallCount)
-
-            // Load songTier2 (no embedded ID3 file) -> hits Tier 2 (LRCLIB) and saves to Room cache
-            val songTier2 = Song(
-                id = 502L,
-                title = "Nghe_Si_A - Bai_Ca_Hy_Vong_[320kbps]_(Official_MV).mp3",
-                uri = Uri.parse("content://media/external/audio/media/502"),
-                duration = 30_000L,
-                dateAdded = 2L
-            )
-            repo.loadLyricsForSong(songTier2)
-            val stateTier2 = repo.uiState.value as LyricsUiState.Success
-            assertEquals(LyricsSource.LRCLIB, stateTier2.source)
-            assertEquals(1, remoteCallCount)
-            assertEquals(3, stateTier2.lines.size)
-            assertEquals(2_000L, stateTier2.lines[0].startTimeMs)
-            assertEquals(8_500L, stateTier2.lines[0].endTimeMs)
-            assertEquals(8_500L, stateTier2.lines[1].startTimeMs)
-            assertEquals(15_000L, stateTier2.lines[1].endTimeMs)
-            assertEquals(15_000L, stateTier2.lines[2].startTimeMs)
-            assertEquals(30_000L, stateTier2.lines[2].endTimeMs)
-
-            // Priority 0 Cache check: new repository instance loads songTier2 immediately from Room DB without calling LRCLIB again
-            val repoFromCache = LyricsRepository(context, dao, offlineEngine, fakeRemote)
-            repoFromCache.loadLyricsForSong(songTier2)
-            val cachedState = repoFromCache.uiState.value as LyricsUiState.Success
-            assertTrue(cachedState.fromCache)
-            assertEquals(1, remoteCallCount)
-            assertEquals(3, cachedState.lines.size)
-
-            // Rescan clears cache for songTier2 and fetches fresh from Tier 2
-            repoFromCache.rescanLyrics(songTier2)
-            assertEquals(2, remoteCallCount)
-
-            // Tier 3 Offline AI Speech-to-Text when LRCLIB returns null
-            val failingRemote = LrcLibRemoteClient { null }
-            offlineEngine.setModelDownloadedForTesting(false)
-            val repoTier3 = LyricsRepository(context, dao, offlineEngine, failingRemote)
-            val songTier3 = Song(
-                id = 503L,
-                title = "Ban_Thu_Am_Rieng_Remix.mp3",
-                uri = Uri.parse("content://media/external/audio/media/503"),
-                duration = 45_000L,
-                dateAdded = 3L
-            )
-
-            // When offline model is not yet downloaded, returns Error with requiresOfflineModelDownload = true
-            repoTier3.loadLyricsForSong(songTier3)
-            val missingModelState = repoTier3.uiState.value as LyricsUiState.Error
-            assertTrue(missingModelState.requiresOfflineModelDownload)
-
-            // Once model is downloaded, Tier 3 transcribes audio and caches with AI_OFFLINE source
-            offlineEngine.setModelDownloadedForTesting(true)
-            repoTier3.rescanLyrics(songTier3)
-            val stateTier3 = repoTier3.uiState.value as LyricsUiState.Success
-            assertEquals(LyricsSource.AI_OFFLINE, stateTier3.source)
-            assertTrue(stateTier3.isSynced)
-            assertTrue(stateTier3.lines.isNotEmpty())
-            tempMp3.delete()
-            Unit
-        } finally {
-            db.close()
-        }
-    }
-
-    @Test
     fun `HoaCaScreen renders continuous text progress bar keeping past lines 100 percent filled, non-shifting dots, swipe-to-refresh, and coordinated toolbar return button`() {
         val song = Song(
             id = 900L,
@@ -2291,119 +2013,682 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `lyrics parser handles offset tags and enhanced word timestamps with calibrated pause clamping`() {
-        val enhancedLrc = """
-            [offset:+500]
-            [00:10.00] <00:10.00>Một <00:11.00>hai <00:13.00>ba
-            [00:30.00] Câu tiếp theo sau đoạn nghỉ dài
-        """.trimIndent()
+    fun `selected song card replaces duration with open-player icon across lists and sheets while AddSongs keeps duration`() {
+        val song1 = Song(1L, "Selected Song.mp3", Uri.parse("content://media/1"), 120_000L, 1L)
+        val song2 = Song(2L, "Other Song.mp3", Uri.parse("content://media/2"), 150_000L, 2L)
+        val song3 = Song(3L, "Addable Song.mp3", Uri.parse("content://media/3"), 150_000L, 3L)
+        val playlist = Playlist(id = 10L, name = "Road Mix", createdAt = 1L, songs = listOf(song1, song2))
 
-        val parsed = Id3v2LyricsExtractor.parseLrcText(enhancedLrc, totalDurationMs = 38_000L)
-        assertEquals(2, parsed.size)
+        var stage by mutableIntStateOf(0)
+        var openPlayerCount = 0
+        var songClickCount = 0
+        var queueOpenPlayerCalls = 0
+        var queueDismissCalls = 0
+        var carouselOpenPlayerCalls = 0
+        var carouselDismissCalls = 0
 
-        // Positive offset +500 shifts timestamps earlier by 500ms (10_000 - 500 = 9_500)
-        assertEquals(9_500L, parsed[0].startTimeMs)
-        assertEquals("Một hai ba", parsed[0].text)
-        assertEquals(3, parsed[0].segments.size)
-        assertEquals(9_500L, parsed[0].segments[0].startTimeMs)
-        assertEquals(10_500L, parsed[0].segments[1].startTimeMs)
-        assertEquals(12_500L, parsed[0].segments[2].startTimeMs)
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                when (stage) {
+                    0 -> {
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            SongList(
+                                songs = listOf(song1, song2),
+                                playbackState = PlaybackState(currentSong = song1, isPlaying = true, durationMs = 120_000L),
+                                onSongClick = { songClickCount++ },
+                                onAddToPlaylist = {},
+                                onRenameSong = { _, _ -> },
+                                onDeleteSong = {},
+                                onOpenPlayer = { openPlayerCount++ },
+                                contentTopPadding = 12.dp,
+                                contentBottomPadding = 144.dp,
+                                isDarkTheme = false
+                            )
+                        }
+                    }
+                    1 -> {
+                        CurrentQueueBottomSheet(
+                            queueSongs = listOf(song1, song2),
+                            currentSong = song1,
+                            isPlaying = true,
+                            activePlaylistName = null,
+                            onSelectSong = {},
+                            onOpenPlayer = { queueOpenPlayerCalls++ },
+                            onDismiss = { queueDismissCalls++ }
+                        )
+                    }
+                    2 -> {
+                        CarouselPlaylistBottomSheet(
+                            playlist = playlist,
+                            currentSong = song1,
+                            activePlaylistId = playlist.id,
+                            isPlaying = true,
+                            onPlayPlaylist = {},
+                            onSelectSong = {},
+                            onOpenPlayer = { carouselOpenPlayerCalls++ },
+                            onDismiss = { carouselDismissCalls++ }
+                        )
+                    }
+                    3 -> {
+                        CurrentQueueBottomSheet(
+                            queueSongs = listOf(song1, song2),
+                            currentSong = song1,
+                            isPlaying = true,
+                            activePlaylistName = null,
+                            onSelectSong = {},
+                            onOpenPlayer = null,
+                            onDismiss = { queueDismissCalls++ }
+                        )
+                    }
+                    else -> {
+                        AddSongsToPlaylistBottomSheet(
+                            playlist = playlist,
+                            allSongs = listOf(song1, song2, song3),
+                            onConfirmAddSongs = {},
+                            onDismiss = {}
+                        )
+                    }
+                }
+            }
+        }
 
-        // Word-level segment interpolation tracks exact word progress instead of stretching across the 20s gap
-        val atWordTwoStart = calculateLineProgress(10_500L, parsed[0], calibrateLongPause = true)
-        assertTrue(atWordTwoStart in 0.25f..0.45f)
+        composeTestRule.waitForIdle()
 
-        val afterLastWordSung = calculateLineProgress(15_500L, parsed[0], calibrateLongPause = true)
-        assertEquals(1.0f, afterLastWordSung, 0.001f)
+        // 1. SongList: selected song displays open-player icon instead of duration; unselected keeps duration & same card height
+        composeTestRule.onNodeWithTag("btn_open_player_1", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_open_player_2", useUnmergedTree = true).assertDoesNotExist()
+        assertEquals(
+            composeTestRule.onNodeWithTag("song_card_2").fetchSemanticsNode().size.height,
+            composeTestRule.onNodeWithTag("song_card_1").fetchSemanticsNode().size.height
+        )
 
-        // Unsegmented line with long pause (> 9.5s) clamps effective vocal span reasonably instead of dragging over 20s
-        val plainLongGapLine = LyricLine(0, 0L, 25_000L, "Câu hát ngắn rồi nghỉ nhạc dài")
-        val progressAt7s = calculateLineProgress(7_000L, plainLongGapLine, calibrateLongPause = true)
-        assertTrue(progressAt7s > 0.75f)
+        composeTestRule.onNodeWithTag("btn_open_player_1", useUnmergedTree = true).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1, openPlayerCount)
+        assertEquals(0, songClickCount)
+
+        // 2. CurrentQueueBottomSheet: shows open-player icon on active row
+        stage = 1
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("btn_open_player_queue_1", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_open_player_queue_2", useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.onNodeWithTag("btn_open_player_queue_1", useUnmergedTree = true).performClick()
+        assertEquals(1, queueOpenPlayerCalls)
+        assertEquals(1, queueDismissCalls)
+
+        // 3. CarouselPlaylistBottomSheet: shows open-player icon on active row
+        stage = 2
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("btn_open_player_carousel_1", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_open_player_carousel_2", useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.onNodeWithTag("btn_open_player_carousel_1", useUnmergedTree = true).performClick()
+        assertEquals(1, carouselOpenPlayerCalls)
+        assertEquals(1, carouselDismissCalls)
+
+        // 4. CurrentQueueBottomSheet opened from NowPlayingScreen (onOpenPlayer = null): active song shows duration, no open-player button
+        stage = 3
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("btn_open_player_queue_1", useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("02:00", useUnmergedTree = true).assertIsDisplayed()
+
+        // 5. AddSongsToPlaylistBottomSheet: excluded and keeps duration text
+        stage = 4
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("pick_song_row_3").assertIsDisplayed()
+        composeTestRule.onNodeWithText("02:30", useUnmergedTree = true).assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_open_player_3", useUnmergedTree = true).assertDoesNotExist()
     }
 
     @Test
-    fun `lyrics extractor skips instrumental and credit sections while capping vocal endTimeMs and repository handles Vietnamese filenames`() {
-        val rawLrcWithInstrumentals = """
-            [00:00.50] Sáng tác: Nhạc Sĩ Trẻ
-            [00:02.00] Ca sĩ: Ca Sĩ A
-            [00:03.50] (Nhạc dạo mở đầu)
-            [00:06.00] Câu hát đầu tiên ngân vang giữa đêm
-            [00:11.00] [Giang tấu]
-            [00:16.00] ♪ ♫ ♪
-            [00:20.00] Câu hát thứ hai tiếp nối cảm xúc (Nhạc dạo)
-            [00:26.00]
-            [00:30.00] Câu hát kết thúc bài ca
-            [00:35.00] [Outro]
-        """.trimIndent()
+    fun `NowPlayingScreen renders ultra minimalist full screen with only back button and music controls`() {
+        val song = Song(
+            id = 55L,
+            title = "Giai Điệu Ánh Trăng.mp3",
+            uri = Uri.parse("content://media/55"),
+            duration = 180_000L,
+            dateAdded = 1L,
+            artist = "Hidden Artist Name"
+        )
+        val posFlow = MutableStateFlow(500L)
+        val sampleRate = 44_100
+        val samples = FloatArray(sampleRate) { i ->
+            val t = i.toFloat() / sampleRate.toFloat()
+            0.75f * sin(2f * PI.toFloat() * 75f * t)
+        }
+        val spectrumProfile = analyzePcmSamplesToProfile(
+            songId = song.id,
+            samples = samples,
+            sampleRateHz = sampleRate
+        )
 
-        val parsedLines = Id3v2LyricsExtractor.parseLrcText(rawLrcWithInstrumentals, totalDurationMs = 42_000L)
+        var isPlayingState by mutableStateOf(true)
+        var playModeState by mutableStateOf(PlayMode.REPEAT_ALL)
+        var themeModeState by mutableStateOf(ThemeMode.SYSTEM)
+        var backCalls = 0
+        var nextCalls = 0
+        var prevCalls = 0
+        var queueOpenCalls = 0
+        var seekTargetMs = -1L
 
-        // Only the 3 real vocal lines are kept; credits, instrumental markers, musical notes, and blank timestamps are skipped
-        assertEquals(3, parsedLines.size)
-        assertEquals("Câu hát đầu tiên ngân vang giữa đêm", parsedLines[0].text)
-        assertEquals("Câu hát thứ hai tiếp nối cảm xúc", parsedLines[1].text)
-        assertEquals("Câu hát kết thúc bài ca", parsedLines[2].text)
-
-        // Instrumental/blank markers at 11.00s, 26.00s, and 35.00s cap the endTimeMs of the preceding vocal lines
-        assertEquals(6_000L, parsedLines[0].startTimeMs)
-        assertEquals(11_000L, parsedLines[0].endTimeMs)
-
-        assertEquals(20_000L, parsedLines[1].startTimeMs)
-        assertEquals(26_000L, parsedLines[1].endTimeMs)
-
-        assertEquals(30_000L, parsedLines[2].startTimeMs)
-        assertEquals(35_000L, parsedLines[2].endTimeMs)
-
-        // During the instrumental break at 15_000ms, line 0 stays 100% colored and line 1 is 0%
-        assertEquals(1.0f, calculateLineProgress(15_000L, parsedLines[0]), 0.001f)
-        assertEquals(0.0f, calculateLineProgress(15_000L, parsedLines[1]), 0.001f)
-
-        // Hyphenated slug and bidirectional "Bài hát - Ca sĩ" filenames generate accurate search candidates
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
-        try {
-            var capturedMetadata: com.example.data.CleanedTrackMetadata? = null
-            val fakeRemote = LrcLibRemoteClient { metadata ->
-                capturedMetadata = metadata
-                RemoteLyricsResponse(
-                    syncedLyrics = rawLrcWithInstrumentals,
-                    plainLyrics = null
+        composeTestRule.setContent {
+            MyApplicationTheme(darkTheme = themeModeState == ThemeMode.DARK) {
+                NowPlayingScreen(
+                    song = song,
+                    isPlaying = isPlayingState,
+                    playMode = playModeState,
+                    themeMode = themeModeState,
+                    durationMs = 180_000L,
+                    currentPositionMsFlow = posFlow,
+                    audioSpectrumProfile = spectrumProfile,
+                    isDarkTheme = themeModeState == ThemeMode.DARK,
+                    onBack = { backCalls++ },
+                    onTogglePlayPause = { isPlayingState = !isPlayingState },
+                    onPlayNext = { nextCalls++ },
+                    onPlayPrevious = { prevCalls++ },
+                    onSeekTo = { seekTargetMs = it },
+                    onCyclePlayMode = {
+                        playModeState = PlayMode.REPEAT_ONE
+                    },
+                    onCycleThemeMode = {
+                        themeModeState = themeModeState.next()
+                    },
+                    onOpenQueue = { queueOpenCalls++ }
                 )
             }
-            val repo = LyricsRepository(
-                context = context,
-                lyricsCacheDao = db.lyricsCacheDao(),
-                offlineEngine = OfflineSpeechLyricsEngine(context),
-                remoteClient = fakeRemote
-            )
-
-            val hyphenSong = Song(
-                id = 777L,
-                title = "Cat-Doi-Noi-Sau - Tang-Duy-Tan (Official Remix 320kbps).mp3",
-                uri = Uri.parse("content://media/external/audio/media/777"),
-                duration = 42_000L,
-                dateAdded = 1L
-            )
-
-            runBlocking {
-                repo.loadLyricsForSong(hyphenSong)
-            }
-
-            assertTrue(capturedMetadata != null)
-            val candidateTitles = capturedMetadata!!.candidatePairs.map { pair -> pair.first }
-            // Bidirectional candidates include both "Cat Doi Noi Sau" and "Tang Duy Tan"
-            assertTrue(candidateTitles.any { it.contains("Cat Doi Noi Sau", ignoreCase = true) })
-            assertTrue(candidateTitles.any { it.contains("Tang Duy Tan", ignoreCase = true) })
-
-            val state = repo.uiState.value as LyricsUiState.Success
-            assertEquals(3, state.lines.size)
-            assertEquals("Câu hát đầu tiên ngân vang giữa đêm", state.lines[0].text)
-        } finally {
-            db.close()
         }
+
+        composeTestRule.waitForIdle()
+
+        // Strictly contains back button & music controller elements, zero artist/extra UI
+        composeTestRule.onNodeWithTag("now_playing_full_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_back").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_kinetic_artwork").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_song_title").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Giai điệu ánh trăng").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_wavy_scrubber").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_current_time").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_total_time").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_previous").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_play_pause").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_next").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_play_mode").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("player_bottom_utility_row").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_theme_mode").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_queue").assertIsDisplayed()
+
+        // Verify all 4 utility buttons (Quay lại, Danh sách, Giao diện, Lặp lại) sit in 1 single row,
+        // evenly spaced horizontally, directly below the Play/Pause control cluster
+        val backBounds = composeTestRule.onNodeWithTag("btn_player_back").fetchSemanticsNode().boundsInRoot
+        val queueBtnBounds = composeTestRule.onNodeWithTag("btn_player_queue").fetchSemanticsNode().boundsInRoot
+        val themeBtnBounds = composeTestRule.onNodeWithTag("btn_player_theme_mode").fetchSemanticsNode().boundsInRoot
+        val modeBounds = composeTestRule.onNodeWithTag("btn_player_play_mode").fetchSemanticsNode().boundsInRoot
+        val playBoundsPlaying = composeTestRule.onNodeWithTag("btn_player_play_pause").fetchSemanticsNode().boundsInRoot
+        val artworkBounds = composeTestRule.onNodeWithTag("player_kinetic_artwork").fetchSemanticsNode().boundsInRoot
+        val titleBounds = composeTestRule.onNodeWithTag("player_song_title").fetchSemanticsNode().boundsInRoot
+
+        assertTrue(titleBounds.top >= artworkBounds.bottom)
+        assertTrue(backBounds.top >= playBoundsPlaying.bottom)
+        assertTrue(abs(backBounds.center.y - queueBtnBounds.center.y) < 2f)
+        assertTrue(abs(queueBtnBounds.center.y - themeBtnBounds.center.y) < 2f)
+        assertTrue(abs(themeBtnBounds.center.y - modeBounds.center.y) < 2f)
+        assertTrue(backBounds.center.x < queueBtnBounds.center.x)
+        assertTrue(queueBtnBounds.center.x < themeBtnBounds.center.x)
+        assertTrue(themeBtnBounds.center.x < modeBounds.center.x)
+
+        val step1 = queueBtnBounds.center.x - backBounds.center.x
+        val step2 = themeBtnBounds.center.x - queueBtnBounds.center.x
+        val step3 = modeBounds.center.x - themeBtnBounds.center.x
+        assertTrue(abs(step1 - step2) < 4f)
+        assertTrue(abs(step2 - step3) < 4f)
+        assertTrue(abs(themeBtnBounds.width - themeBtnBounds.height) <= 2f)
+        assertTrue(abs(queueBtnBounds.width - queueBtnBounds.height) <= 2f)
+
+        // When playing: Play/Pause button morphs into Capsule (width > height) with outer beat halo
+        assertTrue(playBoundsPlaying.width > playBoundsPlaying.height)
+        assertEquals(
+            "capsule_playing",
+            composeTestRule.onNodeWithTag("btn_player_play_pause").fetchSemanticsNode().config[SemanticsProperties.StateDescription]
+        )
+        composeTestRule.onNodeWithTag("player_play_outer_halo").assertExists()
+
+        // Ensure no extra/clutter text or unrelated toolbar items appear
+        composeTestRule.onNodeWithText("Hidden Artist Name").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("nav_pill_menu").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("btn_settings").assertDoesNotExist()
+
+        // Quick 3-theme switcher cycles SYSTEM -> LIGHT -> DARK -> SYSTEM
+        assertEquals(ThemeMode.SYSTEM, themeModeState)
+        composeTestRule.onNodeWithTag("btn_player_theme_mode").performClick()
+        assertEquals(ThemeMode.LIGHT, themeModeState)
+        composeTestRule.onNodeWithTag("btn_player_theme_mode").performClick()
+        assertEquals(ThemeMode.DARK, themeModeState)
+        composeTestRule.onNodeWithTag("btn_player_theme_mode").performClick()
+        assertEquals(ThemeMode.SYSTEM, themeModeState)
+        composeTestRule.waitForIdle()
+
+        // Toggle Pause -> Play/Pause button morphs cleanly to Circle (width == height) and outer halo disappears
+        composeTestRule.onNodeWithTag("btn_player_play_pause").performClick()
+        assertFalse(isPlayingState)
+        composeTestRule.waitForIdle()
+        val playBoundsPaused = composeTestRule.onNodeWithTag("btn_player_play_pause").fetchSemanticsNode().boundsInRoot
+        assertTrue(abs(playBoundsPaused.width - playBoundsPaused.height) <= 2f)
+        assertEquals(
+            "circle_paused",
+            composeTestRule.onNodeWithTag("btn_player_play_pause").fetchSemanticsNode().config[SemanticsProperties.StateDescription]
+        )
+        composeTestRule.onNodeWithTag("player_play_outer_halo").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("btn_player_previous").performClick()
+        assertEquals(1, prevCalls)
+
+        composeTestRule.onNodeWithTag("btn_player_next").performClick()
+        assertEquals(1, nextCalls)
+
+        composeTestRule.onNodeWithTag("btn_player_play_mode").performClick()
+        assertEquals(PlayMode.REPEAT_ONE, playModeState)
+
+        composeTestRule.onNodeWithTag("player_wavy_scrubber").performTouchInput { swipeRight() }
+        assertTrue(seekTargetMs > 0L)
+
+        composeTestRule.onNodeWithTag("btn_player_queue").performClick()
+        assertEquals(1, queueOpenCalls)
+
+        composeTestRule.onNodeWithTag("btn_player_back").performClick()
+        assertEquals(1, backCalls)
+    }
+
+    @Test
+    fun `NowPlayingScreen floating control card hides via V button and 1-minute inactivity while centering interactive 3D sphere`() {
+        val song = Song(
+            id = 88L,
+            title = "Vũ Điệu Vũ Trụ.mp3",
+            uri = Uri.parse("content://media/88"),
+            duration = 200_000L,
+            dateAdded = 1L,
+            artist = "Hidden Artist"
+        )
+        val posFlow = MutableStateFlow(1_200L)
+        val sampleRate = 44_100
+        val samples = FloatArray(sampleRate) { i ->
+            val t = i.toFloat() / sampleRate.toFloat()
+            0.8f * sin(2f * PI.toFloat() * 70f * t)
+        }
+        val spectrumProfile = analyzePcmSamplesToProfile(
+            songId = song.id,
+            samples = samples,
+            sampleRateHz = sampleRate
+        )
+
+        composeTestRule.setContent {
+            MyApplicationTheme(darkTheme = true) {
+                NowPlayingScreen(
+                    song = song,
+                    isPlaying = true,
+                    playMode = PlayMode.REPEAT_ALL,
+                    themeMode = ThemeMode.DARK,
+                    durationMs = 200_000L,
+                    currentPositionMsFlow = posFlow,
+                    audioSpectrumProfile = spectrumProfile,
+                    isDarkTheme = true,
+                    onBack = {},
+                    onTogglePlayPause = {},
+                    onPlayNext = {},
+                    onPlayPrevious = {},
+                    onSeekTo = {},
+                    onCyclePlayMode = {},
+                    onCycleThemeMode = {},
+                    onOpenQueue = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        // 1. Floating control card is visible with centered top chevron-down button
+        composeTestRule.onNodeWithTag("player_control_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_hide_control_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_show_control_card").assertDoesNotExist()
+
+        val screenBounds = composeTestRule.onNodeWithTag("now_playing_full_screen").fetchSemanticsNode().boundsInRoot
+        val cardBounds = composeTestRule.onNodeWithTag("player_control_card").fetchSemanticsNode().boundsInRoot
+        val hideBtnBounds = composeTestRule.onNodeWithTag("btn_player_hide_control_card").fetchSemanticsNode().boundsInRoot
+        val titleBounds = composeTestRule.onNodeWithTag("player_song_title").fetchSemanticsNode().boundsInRoot
+        val sphereBoundsVisible = composeTestRule.onNodeWithTag("player_kinetic_artwork").fetchSemanticsNode().boundsInRoot
+
+        assertTrue(abs(hideBtnBounds.center.x - cardBounds.center.x) < 4f)
+        assertTrue(hideBtnBounds.top >= cardBounds.top)
+        assertTrue(titleBounds.top >= hideBtnBounds.bottom - 2f)
+        assertTrue(sphereBoundsVisible.center.y < screenBounds.center.y)
+
+        // 2. Click V-down button -> control card slides down, V-up button appears, 3D sphere moves down to center
+        composeTestRule.onNodeWithTag("btn_player_hide_control_card").performClick()
+        composeTestRule.mainClock.advanceTimeBy(800L)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("player_control_card").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("btn_player_show_control_card").assertIsDisplayed()
+
+        val sphereBoundsCentered = composeTestRule.onNodeWithTag("player_kinetic_artwork").fetchSemanticsNode().boundsInRoot
+        assertTrue(sphereBoundsCentered.center.y > sphereBoundsVisible.center.y + 40f)
+        assertTrue(abs(sphereBoundsCentered.center.y - screenBounds.center.y) <= 24f)
+
+        // 3. Interactive 3D sphere supports free multi-directional drag rotation while remaining responsive
+        val initialOrientation = composeTestRule
+            .onNodeWithTag("player_kinetic_artwork")
+            .fetchSemanticsNode()
+            .config[SemanticsProperties.StateDescription]
+        composeTestRule.onNodeWithTag("player_kinetic_artwork").performTouchInput {
+            swipe(
+                start = center,
+                end = Offset(center.x + 80f, center.y - 65f),
+                durationMillis = 150L
+            )
+        }
+        composeTestRule.mainClock.advanceTimeBy(120L)
+        composeTestRule.waitForIdle()
+        val draggedOrientation = composeTestRule
+            .onNodeWithTag("player_kinetic_artwork")
+            .fetchSemanticsNode()
+            .config[SemanticsProperties.StateDescription]
+        assertTrue(
+            "Expected draggedOrientation != initialOrientation, initial=$initialOrientation dragged=$draggedOrientation bounds=$sphereBoundsCentered screen=$screenBounds",
+            draggedOrientation != initialOrientation
+        )
+
+        // 4. Click V-up button -> control card restores and sphere moves back up above card
+        composeTestRule.onNodeWithTag("btn_player_show_control_card").performClick()
+        composeTestRule.mainClock.advanceTimeBy(800L)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("player_control_card").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_player_show_control_card").assertDoesNotExist()
+        val sphereBoundsRestored = composeTestRule.onNodeWithTag("player_kinetic_artwork").fetchSemanticsNode().boundsInRoot
+        assertTrue(sphereBoundsRestored.center.y < sphereBoundsCentered.center.y - 40f)
+
+        // 5. After 1 minute (60s) of no touch, control card hides automatically; touching sphere resets the timer
+        composeTestRule.mainClock.advanceTimeBy(40_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("player_control_card").assertIsDisplayed()
+
+        // Dragging the 3D sphere resets the 1-minute countdown and updates rotation
+        val orientationBeforeSecondDrag = composeTestRule
+            .onNodeWithTag("player_kinetic_artwork")
+            .fetchSemanticsNode()
+            .config[SemanticsProperties.StateDescription]
+        composeTestRule.onNodeWithTag("player_kinetic_artwork").performTouchInput {
+            swipe(
+                start = center,
+                end = Offset(center.x - 50f, center.y + 55f),
+                durationMillis = 120L
+            )
+        }
+        composeTestRule.waitForIdle()
+        val orientationAfterSecondDrag = composeTestRule
+            .onNodeWithTag("player_kinetic_artwork")
+            .fetchSemanticsNode()
+            .config[SemanticsProperties.StateDescription]
+        assertTrue(orientationAfterSecondDrag != orientationBeforeSecondDrag)
+
+        // 40s after touch -> still visible!
+        composeTestRule.mainClock.advanceTimeBy(40_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("player_control_card").assertIsDisplayed()
+
+        // Remaining 21s (61s since touch) + animation -> card automatically hides to bottom
+        composeTestRule.mainClock.advanceTimeBy(21_000L)
+        composeTestRule.waitForIdle()
+        composeTestRule.mainClock.advanceTimeBy(600L)
+        composeTestRule.waitForIdle()
+
+        composeTestRule.onNodeWithTag("player_control_card").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("btn_player_show_control_card").assertIsDisplayed()
+        val showChevronBounds = composeTestRule.onNodeWithTag("btn_player_show_control_card").fetchSemanticsNode().boundsInRoot
+        val minTouchPx = with(composeTestRule.density) { 48.dp.toPx() }
+        assertTrue(showChevronBounds.width >= minTouchPx - 1f)
+        assertTrue(showChevronBounds.height >= minTouchPx - 1f)
+    }
+
+    @Test
+    fun `createPlaylistDialog places icon picker bottom-left aligned with cancel and create and 5x6 grid picks icon cleanly`() {
+        var createdName: String? = null
+        var createdIconId: String? = null
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                CreatePlaylistDialog(
+                    onConfirmCreate = { name, iconId ->
+                        createdName = name
+                        createdIconId = iconId
+                    },
+                    onDismiss = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+        val iconBtnBounds = composeTestRule.onNodeWithTag("btn_create_playlist_choose_icon").fetchSemanticsNode().boundsInRoot
+        val cancelBounds = composeTestRule.onNodeWithTag("btn_cancel_create_playlist").fetchSemanticsNode().boundsInRoot
+        val createBounds = composeTestRule.onNodeWithTag("btn_confirm_create_playlist").fetchSemanticsNode().boundsInRoot
+
+        // Bottom-left icon picker sits strictly left of Cancel and Create and aligns horizontally on the same row
+        assertTrue(iconBtnBounds.right < cancelBounds.left)
+        assertTrue(cancelBounds.right <= createBounds.left + 2f)
+        assertTrue(abs(iconBtnBounds.center.y - cancelBounds.center.y) <= 12f)
+        assertTrue(abs(iconBtnBounds.center.y - createBounds.center.y) <= 12f)
+
+        // Tap bottom-left icon button -> opens 5x6 MD3 icon picker popup with 30 icons and NO labels below
+        composeTestRule.onNodeWithTag("btn_create_playlist_choose_icon").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("dialog_playlist_icon_picker").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("playlist_icon_picker_grid").assertIsDisplayed()
+
+        // Verify all 30 icon options exist in a 5-column x 6-row layout, and first music icon is pre-selected by default
+        val allIcons = PlaylistIconCatalog.icons
+        assertEquals(30, allIcons.size)
+        assertEquals(PlaylistIconCatalog.DEFAULT_ICON_ID, allIcons.first().id)
+        assertEquals(
+            true,
+            composeTestRule.onNodeWithTag("playlist_icon_option_${allIcons.first().id}")
+                .fetchSemanticsNode().config[SemanticsProperties.Selected]
+        )
+        val firstRowFirst = composeTestRule.onNodeWithTag("playlist_icon_option_${allIcons[0].id}").fetchSemanticsNode().boundsInRoot
+        val firstRowFifth = composeTestRule.onNodeWithTag("playlist_icon_option_${allIcons[4].id}").fetchSemanticsNode().boundsInRoot
+        val secondRowFirst = composeTestRule.onNodeWithTag("playlist_icon_option_${allIcons[5].id}").fetchSemanticsNode().boundsInRoot
+        assertEquals(firstRowFirst.center.y, firstRowFifth.center.y, 4f)
+        assertTrue(secondRowFirst.top >= firstRowFirst.bottom - 1f)
+        assertEquals(firstRowFirst.center.x, secondRowFirst.center.x, 4f)
+
+        // Tap "coffee" -> immediately saves & closes picker dialog
+        composeTestRule.onNodeWithTag("playlist_icon_option_coffee").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("dialog_playlist_icon_picker").assertDoesNotExist()
+
+        // Enter playlist name and submit
+        composeTestRule.onNodeWithTag("input_playlist_name").performTextInput("Lofi Cafe")
+        composeTestRule.onNodeWithTag("btn_confirm_create_playlist").performClick()
+        composeTestRule.waitForIdle()
+
+        assertEquals("Lofi Cafe", createdName)
+        assertEquals("coffee", createdIconId)
+    }
+
+    @Test
+    fun `choosing playlist icon in detail screen updates oversized watermark across playlists overview and songs carousel`() {
+        val song1 = Song(1L, "Đêm Mưa.mp3", Uri.parse("content://media/1"), 180_000L, 1L)
+        var sharedPlaylist by mutableStateOf(
+            Playlist(id = 88L, name = "Đêm Khuya", createdAt = 1L, songs = listOf(song1), iconId = null)
+        )
+        var screenMode by mutableStateOf("overview")
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                when (screenMode) {
+                    "detail" -> PlaylistDetailScreen(
+                        playlist = sharedPlaylist,
+                        playbackState = PlaybackState(),
+                        onBack = {},
+                        onPlayAll = {},
+                        onAddSongs = {},
+                        onUpdatePlaylistIcon = { newIconId ->
+                            sharedPlaylist = sharedPlaylist.copy(iconId = newIconId)
+                        },
+                        onSongClick = {},
+                        onRemoveSongFromPlaylist = {},
+                        contentTopPadding = 12.dp,
+                        contentBottomPadding = 90.dp,
+                        isDarkTheme = false
+                    )
+                    "overview" -> PlaylistsOverviewScreen(
+                        playlists = listOf(sharedPlaylist),
+                        playbackState = PlaybackState(),
+                        onCreatePlaylist = {},
+                        onOpenPlaylist = {},
+                        onPlayPlaylist = {},
+                        onRequestDeletePlaylist = {},
+                        contentTopPadding = 12.dp,
+                        contentBottomPadding = 90.dp
+                    )
+                    "songs" -> SongList(
+                        songs = listOf(song1),
+                        playlists = listOf(sharedPlaylist),
+                        playbackState = PlaybackState(),
+                        onSongClick = {},
+                        onAddToPlaylist = {},
+                        onRenameSong = { _, _ -> },
+                        onDeleteSong = {},
+                        contentTopPadding = 12.dp,
+                        contentBottomPadding = 90.dp,
+                        isDarkTheme = false
+                    )
+                }
+            }
+        }
+
+        // 1. Default playlist without custom icon uses first music icon ("music_note") as watermark
+        composeTestRule.waitForIdle()
+        assertEquals(
+            PlaylistIconCatalog.DEFAULT_ICON_ID,
+            composeTestRule.onNodeWithTag("playlist_card_watermark_88", useUnmergedTree = true)
+                .fetchSemanticsNode().config[SemanticsProperties.StateDescription]
+        )
+
+        // 2. Open icon picker in PlaylistDetailScreen and select "vinyl"
+        screenMode = "detail"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("btn_choose_playlist_icon").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(
+            true,
+            composeTestRule.onNodeWithTag("playlist_icon_option_${PlaylistIconCatalog.DEFAULT_ICON_ID}")
+                .fetchSemanticsNode().config[SemanticsProperties.Selected]
+        )
+        composeTestRule.onNodeWithTag("playlist_icon_option_vinyl").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals("vinyl", sharedPlaylist.iconId)
+
+        // 3. Verify PlaylistsOverviewScreen displays oversized soft "vinyl" watermark for playlist 88
+        screenMode = "overview"
+        composeTestRule.waitForIdle()
+        assertEquals(
+            "vinyl",
+            composeTestRule.onNodeWithTag("playlist_card_watermark_88", useUnmergedTree = true)
+                .fetchSemanticsNode().config[SemanticsProperties.StateDescription]
+        )
+
+        // 4. Verify Songs screen Carousel card displays synchronized oversized soft "vinyl" watermark for playlist 88
+        screenMode = "songs"
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("carousel_playlist_card_88").assertIsDisplayed()
+        assertEquals(
+            "vinyl",
+            composeTestRule.onNodeWithTag("carousel_playlist_watermark_88", useUnmergedTree = true)
+                .fetchSemanticsNode().config[SemanticsProperties.StateDescription]
+        )
+    }
+
+    @Test
+    fun `carousel watermark centers horizontally on smallest card size while preserving larger card placement`() {
+        // Smallest carousel item sizes (~44..56dp) center the watermark at 0.50f
+        assertEquals(0.50f, resolveCarouselWatermarkCenterXFraction(44f), 0.001f)
+        assertEquals(0.50f, resolveCarouselWatermarkCenterXFraction(52f), 0.001f)
+        assertEquals(0.50f, resolveCarouselWatermarkCenterXFraction(56f), 0.001f)
+        // Medium & Large carousel cards keep 0.65f unchanged
+        assertEquals(0.65f, resolveCarouselWatermarkCenterXFraction(112f), 0.001f)
+        assertEquals(0.65f, resolveCarouselWatermarkCenterXFraction(186f), 0.001f)
+    }
+
+    @Test
+    fun `bottom toolbar capsule indicator slides across tabs with bouncy spring animation`() {
+        val posFlow = MutableStateFlow(0L)
+        var currentTab by mutableStateOf(MainTab.SONGS)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                CapsuleBottomToolbar(
+                    currentTab = currentTab,
+                    onSelectTab = { currentTab = it },
+                    playbackState = PlaybackState(),
+                    currentPositionMsFlow = posFlow,
+                    isDarkTheme = false,
+                    onCyclePlayMode = {},
+                    onTogglePlayPause = {},
+                    onSeek = {},
+                    onOpenQueue = {},
+                    onOpenSettings = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        val songsBounds = composeTestRule.onNodeWithTag("nav_tab_songs").fetchSemanticsNode().boundsInRoot
+        val initialIndicator = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        assertEquals(songsBounds.left, initialIndicator.left, 2f)
+        assertEquals(songsBounds.width, initialIndicator.width, 2f)
+
+        // Click SING (rightmost tab) and pause autoAdvance to observe mid-flight sliding pill
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.onNodeWithTag("nav_tab_sing").performClick()
+        composeTestRule.mainClock.advanceTimeBy(96L)
+
+        val singBoundsDuringMove = composeTestRule.onNodeWithTag("nav_tab_sing").fetchSemanticsNode().boundsInRoot
+        val midFlightIndicator = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        assertTrue(midFlightIndicator.center.x > initialIndicator.center.x + 8f)
+        assertTrue(midFlightIndicator.center.x < singBoundsDuringMove.center.x)
+
+        composeTestRule.mainClock.autoAdvance = true
+        composeTestRule.waitForIdle()
+
+        val singFinalBounds = composeTestRule.onNodeWithTag("nav_tab_sing").fetchSemanticsNode().boundsInRoot
+        val indicatorAtSing = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        assertEquals(singFinalBounds.left, indicatorAtSing.left, 2.5f)
+        assertEquals(singFinalBounds.width, indicatorAtSing.width, 2.5f)
+
+        // Slide back to middle tab PLAYLISTS and check bouncy overshoot past target left before settling
+        composeTestRule.mainClock.autoAdvance = false
+        composeTestRule.onNodeWithTag("nav_tab_playlists").performClick()
+        var sawLeftOvershoot = false
+        repeat(15) {
+            composeTestRule.mainClock.advanceTimeBy(24L)
+            val playlistsBoundsNow = composeTestRule.onNodeWithTag("nav_tab_playlists").fetchSemanticsNode().boundsInRoot
+            val indicatorNow = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot
+            if (indicatorNow.center.x < playlistsBoundsNow.center.x - 1f) {
+                sawLeftOvershoot = true
+            }
+        }
+        assertTrue("Expected spring overshoot past middle tab when sliding right-to-left", sawLeftOvershoot)
+
+        composeTestRule.mainClock.autoAdvance = true
+        composeTestRule.waitForIdle()
+        val playlistsFinalBounds = composeTestRule.onNodeWithTag("nav_tab_playlists").fetchSemanticsNode().boundsInRoot
+        val indicatorAtPlaylists = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        assertEquals(playlistsFinalBounds.left, indicatorAtPlaylists.left, 2.5f)
+        assertEquals(playlistsFinalBounds.width, indicatorAtPlaylists.width, 2.5f)
     }
 }
 

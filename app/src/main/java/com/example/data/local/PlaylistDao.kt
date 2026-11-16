@@ -25,6 +25,9 @@ interface PlaylistDao {
     @Query("UPDATE playlists SET name = :newName WHERE id = :playlistId")
     suspend fun updatePlaylistName(playlistId: Long, newName: String)
 
+    @Query("UPDATE playlists SET iconId = :iconId WHERE id = :playlistId")
+    suspend fun updatePlaylistIcon(playlistId: Long, iconId: String?)
+
     @Query("UPDATE playlists SET sortOrder = :sortOrder WHERE id = :playlistId")
     suspend fun updatePlaylistSortOrder(playlistId: Long, sortOrder: Int)
 
@@ -46,6 +49,23 @@ interface PlaylistDao {
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertPlaylistSongs(entries: List<PlaylistSongEntity>)
+
+    @Transaction
+    suspend fun addSongToAllPlaylists(songId: Long, playlistIds: List<Long>, addedAt: Long) {
+        for (playlistId in playlistIds.distinct()) {
+            val nextPos = (getMaxPosition(playlistId) ?: -1) + 1
+            insertPlaylistSongs(
+                listOf(
+                    PlaylistSongEntity(
+                        playlistId = playlistId,
+                        songId = songId,
+                        position = nextPos,
+                        addedAt = addedAt
+                    )
+                )
+            )
+        }
+    }
 
     @Query("DELETE FROM playlist_songs WHERE playlistId = :playlistId AND songId = :songId")
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long)

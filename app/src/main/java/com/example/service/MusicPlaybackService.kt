@@ -48,8 +48,10 @@ class MusicPlaybackService : Service(),
     private var progressJob: Job? = null
 
     private var mediaPlayer: MediaPlayer? = null
+    private var prepareGeneration: Int = 0
+    private var cachedPlayerDurationMs: Long = 0L
     private lateinit var playbackManager: PlaybackManager
-    private lateinit var audioManager: AudioManager
+    private var audioManager: AudioManager? = null
     private var mediaSession: MediaSessionCompat? = null
 
     // Cached PendingIntents to avoid repeated Binder IPC allocations on notification updates
@@ -129,7 +131,7 @@ class MusicPlaybackService : Service(),
     override fun onCreate() {
         super.onCreate()
         playbackManager = PlaybackManager.getInstance(this)
-        audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
 
         setupMediaSession()
         createNotificationChannel()
@@ -232,6 +234,9 @@ class MusicPlaybackService : Service(),
         updateMediaSessionMetadata(song)
         updateMediaSessionState(true, 0L)
 
+        val currentGen = ++prepareGeneration
+        cachedPlayerDurationMs = song.duration.coerceAtLeast(0L)
+
         try {
             stopProgressTracker()
             val oldPlayer = mediaPlayer
@@ -252,7 +257,15 @@ class MusicPlaybackService : Service(),
             )
             player.setWakeMode(applicationContext, PowerManager.PARTIAL_WAKE_LOCK)
             player.setDataSource(applicationContext, song.uri)
-            player.setOnPreparedListener(this@MusicPlaybackService)
+            player.setOnPreparedListener { preparedMp ->
+                if (prepareGeneration == currentGen) {
+                    onPrepared(preparedMp)
+                } else {
+                    serviceScope.launch(Dispatchers.IO) {
+                        releasePlayerSafely(preparedMp)
+                    }
+                }
+            }
             player.setOnCompletionListener(this@MusicPlaybackService)
             player.setOnErrorListener(this@MusicPlaybackService)
             player.prepareAsync()
@@ -269,6 +282,9 @@ class MusicPlaybackService : Service(),
             mp.duration.toLong()
         } catch (_: Throwable) {
             0L
+        }
+        if (durationMs > 0L) {
+            cachedPlayerDurationMs = durationMs
         }
 
         if (seekPos > 0 && seekPos < durationMs) {
@@ -373,6 +389,7 @@ class MusicPlaybackService : Service(),
 
     private fun requestAudioFocus(): Boolean {
         if (hasAudioFocus) return true
+        val am = audioManager ?: return false
 
         val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val audioAttributes = AudioAttributes.Builder()
@@ -387,10 +404,10 @@ class MusicPlaybackService : Service(),
                 .build()
 
             audioFocusRequest = request
-            audioManager.requestAudioFocus(request)
+            am.requestAudioFocus(request)
         } else {
             @Suppress("DEPRECATION")
-            audioManager.requestAudioFocus(
+            am.requestAudioFocus(
                 this,
                 AudioManager.STREAM_MUSIC,
                 AudioManager.AUDIOFOCUS_GAIN
@@ -403,11 +420,14 @@ class MusicPlaybackService : Service(),
 
     private fun abandonAudioFocus() {
         if (!hasAudioFocus) return
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
-        } else {
-            @Suppress("DEPRECATION")
-            audioManager.abandonAudioFocus(this)
+        val am = audioManager
+        if (am != null) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                audioFocusRequest?.let { am.abandonAudioFocusRequest(it) }
+            } else {
+                @Suppress("DEPRECATION")
+                am.abandonAudioFocus(this)
+            }
         }
         hasAudioFocus = false
     }
@@ -447,7 +467,11 @@ class MusicPlaybackService : Service(),
                     val mp = mediaPlayer
                     if (mp != null && mp.isPlaying) {
                         val current = mp.currentPosition.toLong()
-                        val total = mp.duration.toLong()
+                        var total = cachedPlayerDurationMs
+                        if (total <= 0L) {
+                            total = mp.duration.toLong()
+                            if (total > 0L) cachedPlayerDurationMs = total
+                        }
                         playbackManager.updateProgress(current, total)
                     }
                 } catch (_: Exception) {

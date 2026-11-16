@@ -64,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
+import com.example.ui.theme.LocalizedAppScope
 import kotlin.math.roundToInt
 
 private data class AudioPreset(
@@ -124,27 +125,29 @@ fun AudioEffectsBottomSheet(
         tonalElevation = 0.dp,
         dragHandle = { BottomSheetDefaults.DragHandle() }
     ) {
-        Box(
-            modifier = Modifier.fillMaxWidth(),
-            contentAlignment = Alignment.TopCenter
-        ) {
-            AudioEffectsContent(
-                bassStrength = bassStrength,
-                trebleStrength = trebleStrength,
-                vocalStrength = vocalStrength,
-                virtualizerStrength = virtualizerStrength,
-                onBassChange = onBassChange,
-                onTrebleChange = onTrebleChange,
-                onVocalChange = onVocalChange,
-                onVirtualizerChange = onVirtualizerChange,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 600.dp)
-                    .verticalScroll(rememberScrollState())
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 18.dp)
-            )
+        LocalizedAppScope {
+            Box(
+                modifier = Modifier.fillMaxWidth(),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                AudioEffectsContent(
+                    bassStrength = bassStrength,
+                    trebleStrength = trebleStrength,
+                    vocalStrength = vocalStrength,
+                    virtualizerStrength = virtualizerStrength,
+                    onBassChange = onBassChange,
+                    onTrebleChange = onTrebleChange,
+                    onVocalChange = onVocalChange,
+                    onVirtualizerChange = onVirtualizerChange,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 600.dp)
+                        .verticalScroll(rememberScrollState())
+                        .windowInsetsPadding(WindowInsets.navigationBars)
+                        .padding(horizontal = 20.dp)
+                        .padding(bottom = 18.dp)
+                )
+            }
         }
     }
 }

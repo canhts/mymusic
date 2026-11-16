@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AlertDialogDefaults
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -101,77 +102,151 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.zIndex
 import com.example.R
 import com.example.model.Playlist
 import com.example.model.Song
+import com.example.ui.theme.LocalizedAppScope
 
 @Composable
 internal fun CreatePlaylistDialog(
-    onConfirmCreate: (String) -> Unit,
+    onConfirmCreate: (String, String?) -> Unit,
     onDismiss: () -> Unit
 ) {
     var playlistName by remember { mutableStateOf("") }
+    var selectedIconId by remember { mutableStateOf(PlaylistIconCatalog.DEFAULT_ICON_ID) }
+    var showIconPicker by remember { mutableStateOf(false) }
     val trimmed = playlistName.trim()
+    val selectedIconItem = remember(selectedIconId) { PlaylistIconCatalog.resolveOrDefault(selectedIconId) }
+    val isCustomIconChosen = selectedIconId != PlaylistIconCatalog.DEFAULT_ICON_ID
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        icon = {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.primaryContainer)
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.QueueMusic,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(22.dp)
-                )
-            }
-        },
-        title = {
-            Text(
-                text = stringResource(R.string.playlist_create_dialog_title),
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-            )
-        },
-        text = {
-            OutlinedTextField(
-                value = playlistName,
-                onValueChange = { playlistName = it },
-                label = { Text(stringResource(R.string.playlist_name_label)) },
-                singleLine = true,
+    Dialog(onDismissRequest = onDismiss) {
+        LocalizedAppScope {
+            Surface(
+                shape = RoundedCornerShape(24.dp),
+                color = AlertDialogDefaults.containerColor,
+                tonalElevation = AlertDialogDefaults.TonalElevation,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("input_playlist_name")
-            )
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (trimmed.isNotEmpty()) {
-                        onConfirmCreate(trimmed)
+                    .widthIn(max = 400.dp)
+                    .testTag("dialog_create_playlist")
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(24.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primaryContainer)
+                    ) {
+                        Icon(
+                            imageVector = selectedIconItem.vector,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier.size(22.dp)
+                        )
                     }
-                },
-                enabled = trimmed.isNotEmpty(),
-                modifier = Modifier.testTag("btn_confirm_create_playlist")
-            ) {
-                Text(stringResource(R.string.action_create))
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    Text(
+                        text = stringResource(R.string.playlist_create_dialog_title),
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        color = AlertDialogDefaults.titleContentColor,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    OutlinedTextField(
+                        value = playlistName,
+                        onValueChange = { playlistName = it },
+                        label = { Text(stringResource(R.string.playlist_name_label)) },
+                        singleLine = true,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("input_playlist_name")
+                    )
+
+                    Spacer(modifier = Modifier.height(22.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        FilledTonalIconButton(
+                            onClick = { showIconPicker = true },
+                            shape = CircleShape,
+                            colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                containerColor = if (isCustomIconChosen) {
+                                    MaterialTheme.colorScheme.primaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                },
+                                contentColor = if (isCustomIconChosen) {
+                                    MaterialTheme.colorScheme.onPrimaryContainer
+                                } else {
+                                    MaterialTheme.colorScheme.onSecondaryContainer
+                                }
+                            ),
+                            modifier = Modifier
+                                .size(48.dp)
+                                .testTag("btn_create_playlist_choose_icon")
+                        ) {
+                            Icon(
+                                imageVector = selectedIconItem.vector,
+                                contentDescription = stringResource(R.string.cd_choose_playlist_icon),
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.weight(1f))
+
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            TextButton(
+                                onClick = onDismiss,
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("btn_cancel_create_playlist")
+                            ) {
+                                Text(stringResource(R.string.action_cancel))
+                            }
+                            Button(
+                                onClick = {
+                                    if (trimmed.isNotEmpty()) {
+                                        onConfirmCreate(trimmed, selectedIconId)
+                                    }
+                                },
+                                enabled = trimmed.isNotEmpty(),
+                                modifier = Modifier
+                                    .heightIn(min = 48.dp)
+                                    .testTag("btn_confirm_create_playlist")
+                            ) {
+                                Text(stringResource(R.string.action_create))
+                            }
+                        }
+                    }
+                }
             }
-        },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.testTag("btn_cancel_create_playlist")
-            ) {
-                Text(stringResource(R.string.action_cancel))
-            }
-        },
-        shape = RoundedCornerShape(24.dp)
-    )
+        }
+    }
+
+    if (showIconPicker) {
+        PlaylistCustomIconPickerDialog(
+            selectedIconId = selectedIconId,
+            onSelectIcon = { iconId -> selectedIconId = iconId },
+            onDismiss = { showIconPicker = false }
+        )
+    }
 }
 
 @Composable
@@ -202,41 +277,49 @@ internal fun RenamePlaylistDialog(
             }
         },
         title = {
-            Text(
-                text = stringResource(R.string.playlist_rename_dialog_title),
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-            )
+            LocalizedAppScope {
+                Text(
+                    text = stringResource(R.string.playlist_rename_dialog_title),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                )
+            }
         },
         text = {
-            OutlinedTextField(
-                value = playlistName,
-                onValueChange = { playlistName = it },
-                label = { Text(stringResource(R.string.playlist_name_label)) },
-                singleLine = true,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("input_rename_playlist_name")
-            )
+            LocalizedAppScope {
+                OutlinedTextField(
+                    value = playlistName,
+                    onValueChange = { playlistName = it },
+                    label = { Text(stringResource(R.string.playlist_name_label)) },
+                    singleLine = true,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .testTag("input_rename_playlist_name")
+                )
+            }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (trimmed.isNotEmpty()) {
-                        onConfirmRename(trimmed)
-                    }
-                },
-                enabled = trimmed.isNotEmpty() && trimmed != initialName.trim(),
-                modifier = Modifier.testTag("btn_confirm_rename_playlist")
-            ) {
-                Text(stringResource(R.string.action_save))
+            LocalizedAppScope {
+                Button(
+                    onClick = {
+                        if (trimmed.isNotEmpty()) {
+                            onConfirmRename(trimmed)
+                        }
+                    },
+                    enabled = trimmed.isNotEmpty() && trimmed != initialName.trim(),
+                    modifier = Modifier.testTag("btn_confirm_rename_playlist")
+                ) {
+                    Text(stringResource(R.string.action_save))
+                }
             }
         },
         dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.testTag("btn_cancel_rename_playlist")
-            ) {
-                Text(stringResource(R.string.action_cancel))
+            LocalizedAppScope {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("btn_cancel_rename_playlist")
+                ) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         },
         shape = RoundedCornerShape(24.dp)
@@ -268,36 +351,44 @@ internal fun DeletePlaylistDialog(
             }
         },
         title = {
-            Text(
-                text = stringResource(R.string.playlist_delete_dialog_title),
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-            )
+            LocalizedAppScope {
+                Text(
+                    text = stringResource(R.string.playlist_delete_dialog_title),
+                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                )
+            }
         },
         text = {
-            Text(
-                text = stringResource(R.string.playlist_delete_dialog_message, playlist.name),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            LocalizedAppScope {
+                Text(
+                    text = stringResource(R.string.playlist_delete_dialog_message, playlist.name),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         },
         confirmButton = {
-            Button(
-                onClick = onConfirmDelete,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.error,
-                    contentColor = MaterialTheme.colorScheme.onError
-                ),
-                modifier = Modifier.testTag("btn_confirm_delete_playlist")
-            ) {
-                Text(stringResource(R.string.action_delete))
+            LocalizedAppScope {
+                Button(
+                    onClick = onConfirmDelete,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError
+                    ),
+                    modifier = Modifier.testTag("btn_confirm_delete_playlist")
+                ) {
+                    Text(stringResource(R.string.action_delete))
+                }
             }
         },
         dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.testTag("btn_cancel_delete_playlist")
-            ) {
-                Text(stringResource(R.string.action_cancel))
+            LocalizedAppScope {
+                TextButton(
+                    onClick = onDismiss,
+                    modifier = Modifier.testTag("btn_cancel_delete_playlist")
+                ) {
+                    Text(stringResource(R.string.action_cancel))
+                }
             }
         },
         shape = RoundedCornerShape(24.dp)
@@ -327,6 +418,7 @@ internal fun AddToPlaylistBottomSheet(
         tonalElevation = 0.dp,
         dragHandle = { BottomSheetDefaults.DragHandle() }
     ) {
+        LocalizedAppScope {
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.TopCenter
@@ -554,6 +646,7 @@ internal fun AddToPlaylistBottomSheet(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -859,6 +952,7 @@ internal fun AddSongsToPlaylistBottomSheet(
         tonalElevation = 0.dp,
         dragHandle = { BottomSheetDefaults.DragHandle() }
     ) {
+        LocalizedAppScope {
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.TopCenter
@@ -1050,6 +1144,7 @@ internal fun AddSongsToPlaylistBottomSheet(
                 }
             }
         }
+        }
     }
 }
 
@@ -1061,6 +1156,7 @@ internal fun CurrentQueueBottomSheet(
     isPlaying: Boolean,
     activePlaylistName: String?,
     onSelectSong: (Song) -> Unit,
+    onOpenPlayer: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1127,6 +1223,7 @@ internal fun CurrentQueueBottomSheet(
         tonalElevation = 0.dp,
         dragHandle = { BottomSheetDefaults.DragHandle() }
     ) {
+        LocalizedAppScope {
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.TopCenter
@@ -1241,7 +1338,8 @@ internal fun CurrentQueueBottomSheet(
                                     ),
                                     label = "queue_row_bg_${song.id}"
                                 )
-                                val rowShape = RoundedCornerShape(rowCorner.coerceAtLeast(0.dp))
+                                val rowRadius = rowCorner.coerceAtLeast(0.dp)
+                                val rowShape = remember(rowRadius) { RoundedCornerShape(rowRadius) }
                                 Surface(
                                     shape = rowShape,
                                     color = rowColor,
@@ -1305,17 +1403,29 @@ internal fun CurrentQueueBottomSheet(
 
                                         Spacer(modifier = Modifier.width(6.dp))
 
-                                        Text(
-                                            text = formatCardDuration(song.duration),
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontFeatureSettings = "tnum"
-                                            ),
-                                            color = if (isCurrent) {
-                                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.80f)
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            }
-                                        )
+                                        if (isCurrent && onOpenPlayer != null) {
+                                            SelectedSongOpenPlayerButton(
+                                                onClick = {
+                                                    onDismiss()
+                                                    onOpenPlayer()
+                                                },
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                containerColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.12f),
+                                                modifier = Modifier.testTag("btn_open_player_queue_${song.id}")
+                                            )
+                                        } else {
+                                            Text(
+                                                text = formatCardDuration(song.duration),
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontFeatureSettings = "tnum"
+                                                ),
+                                                color = if (isCurrent) {
+                                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.80f)
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1323,6 +1433,7 @@ internal fun CurrentQueueBottomSheet(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1336,6 +1447,7 @@ internal fun CarouselPlaylistBottomSheet(
     isPlaying: Boolean,
     onPlayPlaylist: (Playlist) -> Unit,
     onSelectSong: (Song) -> Unit,
+    onOpenPlayer: (() -> Unit)? = null,
     onDismiss: () -> Unit
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -1405,6 +1517,7 @@ internal fun CarouselPlaylistBottomSheet(
         tonalElevation = 0.dp,
         dragHandle = { BottomSheetDefaults.DragHandle() }
     ) {
+        LocalizedAppScope {
         Box(
             modifier = Modifier.fillMaxWidth(),
             contentAlignment = Alignment.TopCenter
@@ -1555,7 +1668,8 @@ internal fun CarouselPlaylistBottomSheet(
                                     ),
                                     label = "carousel_sheet_row_bg_${song.id}"
                                 )
-                                val rowShape = RoundedCornerShape(rowCorner.coerceAtLeast(0.dp))
+                                val rowRadius = rowCorner.coerceAtLeast(0.dp)
+                                val rowShape = remember(rowRadius) { RoundedCornerShape(rowRadius) }
                                 Surface(
                                     shape = rowShape,
                                     color = rowColor,
@@ -1618,17 +1732,29 @@ internal fun CarouselPlaylistBottomSheet(
 
                                         Spacer(modifier = Modifier.width(6.dp))
 
-                                        Text(
-                                            text = formatCardDuration(song.duration),
-                                            style = MaterialTheme.typography.labelSmall.copy(
-                                                fontFeatureSettings = "tnum"
-                                            ),
-                                            color = if (isCurrent) {
-                                                MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.80f)
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            }
-                                        )
+                                        if (isCurrent && onOpenPlayer != null) {
+                                            SelectedSongOpenPlayerButton(
+                                                onClick = {
+                                                    onDismiss()
+                                                    onOpenPlayer()
+                                                },
+                                                tint = MaterialTheme.colorScheme.primary,
+                                                containerColor = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.12f),
+                                                modifier = Modifier.testTag("btn_open_player_carousel_${song.id}")
+                                            )
+                                        } else {
+                                            Text(
+                                                text = formatCardDuration(song.duration),
+                                                style = MaterialTheme.typography.labelSmall.copy(
+                                                    fontFeatureSettings = "tnum"
+                                                ),
+                                                color = if (isCurrent) {
+                                                    MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.80f)
+                                                } else {
+                                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -1636,6 +1762,7 @@ internal fun CarouselPlaylistBottomSheet(
                     }
                 }
             }
+        }
         }
     }
 }

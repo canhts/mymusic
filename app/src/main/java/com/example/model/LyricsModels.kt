@@ -146,8 +146,24 @@ fun calculateLineProgress(
  * sang câu kế tiếp chứa đoạn nghỉ nhạc dài (> 12 giây) hoặc sát câu tiếp theo.
  */
 internal fun estimateEffectiveVocalEndMs(line: LyricLine, rawSpanMs: Long): Long {
-    val cleanLen = line.text.trim().length
-    val wordCount = line.text.trim().split(Regex("""\s+""")).count { it.isNotEmpty() }.coerceAtLeast(1)
+    val text = line.text
+    var start = 0
+    var end = text.length - 1
+    while (start <= end && text[start].isWhitespace()) start++
+    while (end >= start && text[end].isWhitespace()) end--
+    val cleanLen = (end - start + 1).coerceAtLeast(0)
+
+    var words = 0
+    var inWord = false
+    for (i in start..end) {
+        if (text[i].isWhitespace()) {
+            inWord = false
+        } else if (!inWord) {
+            inWord = true
+            words++
+        }
+    }
+    val wordCount = words.coerceAtLeast(1)
 
     if (rawSpanMs > 12_000L) {
         val estimatedVocalSpan = (wordCount * 430L + cleanLen * 48L + 950L).coerceIn(2_800L, 6_800L)
@@ -163,24 +179,35 @@ internal fun estimateEffectiveVocalEndMs(line: LyricLine, rawSpanMs: Long): Long
 }
 
 /**
- * Xác định chỉ số câu đang hát hiện tại dựa trên `currentPositionMs`.
+ * Xác định chỉ số câu đang hát hiện tại dựa trên `currentPositionMs` bằng tìm kiếm nhị phân O(log N).
  */
 fun findActiveLyricLineIndex(lines: List<LyricLine>, currentPositionMs: Long): Int {
     if (lines.isEmpty()) return -1
-    for (i in lines.indices) {
+    var low = 0
+    var high = lines.lastIndex
+    var candidate = -1
+    while (low <= high) {
+        val mid = (low + high) ushr 1
+        if (lines[mid].startTimeMs <= currentPositionMs) {
+            candidate = mid
+            low = mid + 1
+        } else {
+            high = mid - 1
+        }
+    }
+    if (candidate < 0) return -1
+
+    var i = candidate
+    while (i >= 0) {
         val line = lines[i]
         if (currentPositionMs >= line.startTimeMs && currentPositionMs < line.endTimeMs) {
             return i
         }
-    }
-    var lastPassedIndex = -1
-    for (i in lines.indices) {
-        if (currentPositionMs >= lines[i].startTimeMs) {
-            lastPassedIndex = i
-        } else {
+        if (i > 0 && lines[i - 1].endTimeMs <= currentPositionMs) {
             break
         }
+        i--
     }
-    return lastPassedIndex
+    return candidate
 }
 

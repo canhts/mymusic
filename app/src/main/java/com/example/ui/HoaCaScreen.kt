@@ -51,6 +51,8 @@ import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -86,7 +88,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.example.R
 import com.example.model.LyricLine
 import com.example.model.LyricsSource
@@ -127,31 +132,7 @@ fun HoaCaScreen(
     contentBottomPadding: Dp = 144.dp,
     modifier: Modifier = Modifier
 ) {
-    val flowPositionMs by currentPositionMsFlow.collectAsStateWithLifecycle()
-    var anchorPositionMs by remember(currentSong?.id) { mutableLongStateOf(flowPositionMs) }
-    var anchorNanoTime by remember(currentSong?.id) { mutableLongStateOf(System.nanoTime()) }
-    var livePositionMs by remember(currentSong?.id) { mutableLongStateOf(flowPositionMs) }
-
-    // Neo đồng hồ đơn điệu trực tiếp vào mẫu vị trí phát thực tế từ MediaPlayer
-    LaunchedEffect(flowPositionMs, currentSong?.id) {
-        anchorPositionMs = flowPositionMs
-        anchorNanoTime = System.nanoTime()
-        livePositionMs = flowPositionMs
-    }
-
-    // Nội suy mượt ở tần số khung hình (60/120Hz) giữa các lần cập nhật 25ms của service mà không trôi vượt mốc thực tế
-    LaunchedEffect(isPlaying, currentSong?.id) {
-        if (isPlaying && currentSong != null) {
-            anchorPositionMs = currentPositionMsFlow.value
-            anchorNanoTime = System.nanoTime()
-            while (isActive) {
-                withFrameNanos { frameNanos ->
-                    val elapsedSinceSync = ((frameNanos - anchorNanoTime) / 1_000_000L).coerceIn(0L, 65L)
-                    livePositionMs = anchorPositionMs + elapsedSinceSync
-                }
-            }
-        }
-    }
+    // Đồng hồ vị trí phát được cô lập xuống HoaCaLyricsContent để không recompose header/PullToRefresh ở 60Hz
 
     DisposableEffect(Unit) {
         onDispose {
@@ -256,18 +237,14 @@ fun HoaCaScreen(
                     is LyricsUiState.Success -> {
                         HoaCaLyricsContent(
                             songId = currentSong.id,
+                            isPlaying = isPlaying,
+                            currentPositionMsFlow = currentPositionMsFlow,
                             lines = lyricsUiState.lines,
                             isSynced = lyricsUiState.isSynced,
-                            currentPositionMs = livePositionMs,
                             contentBottomPadding = contentBottomPadding,
                             returnToActiveRequestTick = returnToActiveRequestTick,
                             onReturnToActiveVisibilityChanged = onReturnToActiveVisibilityChanged,
-                            onSeekToLine = { targetMs ->
-                                anchorPositionMs = targetMs
-                                anchorNanoTime = System.nanoTime()
-                                livePositionMs = targetMs
-                                onSeekTo(targetMs)
-                            },
+                            onSeekToLine = onSeekTo,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
@@ -379,9 +356,10 @@ private fun LyricsSyncIconBadge(
 @Composable
 private fun HoaCaLyricsContent(
     songId: Long,
+    isPlaying: Boolean,
+    currentPositionMsFlow: StateFlow<Long>,
     lines: List<LyricLine>,
     isSynced: Boolean,
-    currentPositionMs: Long,
     contentBottomPadding: Dp,
     returnToActiveRequestTick: Int,
     onReturnToActiveVisibilityChanged: (Boolean) -> Unit,
@@ -390,13 +368,44 @@ private fun HoaCaLyricsContent(
 ) {
     val listState = rememberLazyListState()
     val haptic = LocalHapticFeedback.current
+    val lifecycleOwner = LocalLifecycleOwner.current
+
+    val flowPositionMs by currentPositionMsFlow.collectAsStateWithLifecycle()
+    var anchorPositionMs by remember(songId) { mutableLongStateOf(flowPositionMs) }
+    var anchorNanoTime by remember(songId) { mutableLongStateOf(System.nanoTime()) }
+    val livePositionState = remember(songId) { mutableLongStateOf(flowPositionMs) }
+
+    // Neo đồng hồ đơn điệu trực tiếp vào mẫu vị trí phát thực tế từ MediaPlayer
+    LaunchedEffect(flowPositionMs, songId) {
+        anchorPositionMs = flowPositionMs
+        anchorNanoTime = System.nanoTime()
+        livePositionState.longValue = flowPositionMs
+    }
+
+    // Nội suy mượt ở tần số khung hình (60/120Hz), tự động tạm dừng khi app/tab rời trạng thái STARTED
+    LaunchedEffect(isPlaying, songId, isSynced, lifecycleOwner) {
+        if (isPlaying && isSynced) {
+            lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                anchorPositionMs = currentPositionMsFlow.value
+                anchorNanoTime = System.nanoTime()
+                while (isActive) {
+                    withFrameNanos { frameNanos ->
+                        val elapsedSinceSync = ((frameNanos - anchorNanoTime) / 1_000_000L).coerceIn(0L, 65L)
+                        livePositionState.longValue = anchorPositionMs + elapsedSinceSync
+                    }
+                }
+            }
+        }
+    }
 
     var viewportHeightPx by remember { mutableIntStateOf(0) }
     var userScrollPauseTick by remember(songId) { mutableLongStateOf(0L) }
     var isUserScrollPaused by remember(songId) { mutableStateOf(false) }
 
-    val activeLineIndex = remember(lines, currentPositionMs, isSynced) {
-        if (isSynced) findActiveLyricLineIndex(lines, currentPositionMs) else -1
+    val activeLineIndex by remember(lines, isSynced) {
+        derivedStateOf {
+            if (isSynced) findActiveLyricLineIndex(lines, livePositionState.longValue) else -1
+        }
     }
 
     val shouldShowReturnButton = isSynced && isUserScrollPaused && activeLineIndex in lines.indices
@@ -480,6 +489,15 @@ private fun HoaCaLyricsContent(
     val activePrimaryColor = MaterialTheme.colorScheme.primary
     val inactiveSyncedColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.42f)
     val unsyncedReadableColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f)
+    val baseTitleMedium = MaterialTheme.typography.titleMedium
+    val lyricTextStyle = remember(baseTitleMedium) {
+        baseTitleMedium.copy(
+            fontSize = 19.sp,
+            lineHeight = 28.sp,
+            fontWeight = FontWeight.SemiBold,
+            lineBreak = LineBreak.Paragraph
+        )
+    }
 
     LazyColumn(
         state = listState,
@@ -499,28 +517,20 @@ private fun HoaCaLyricsContent(
             key = { idx, line -> "lyric_${idx}_${line.startTimeMs}" },
             contentType = { _, _ -> "lyric_line" }
         ) { index, line ->
-            val lineProgress = if (isSynced) {
-                calculateLineProgress(
-                    currentPositionMs = currentPositionMs,
-                    line = line,
-                    calibrateLongPause = true
-                )
-            } else {
-                0f
-            }
-            val isCurrentActiveLine = isSynced && (
-                (lineProgress > 0f && lineProgress < 1f) || index == activeLineIndex
-            )
-
+            val isRowActiveIndex = isSynced && index == activeLineIndex
             LyricLineRow(
                 line = line,
-                lineProgress = lineProgress,
+                livePositionState = livePositionState,
                 isSynced = isSynced,
-                isCurrentActiveLine = isCurrentActiveLine,
+                isRowActiveIndex = isRowActiveIndex,
                 activeColor = activePrimaryColor,
                 inactiveColor = if (isSynced) inactiveSyncedColor else unsyncedReadableColor,
+                textStyle = lyricTextStyle,
                 onClick = {
                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    anchorPositionMs = line.startTimeMs
+                    anchorNanoTime = System.nanoTime()
+                    livePositionState.longValue = line.startTimeMs
                     onSeekToLine(line.startTimeMs)
                 },
                 modifier = Modifier
@@ -534,16 +544,46 @@ private fun HoaCaLyricsContent(
 @Composable
 private fun LyricLineRow(
     line: LyricLine,
-    lineProgress: Float,
+    livePositionState: State<Long>,
     isSynced: Boolean,
-    isCurrentActiveLine: Boolean,
+    isRowActiveIndex: Boolean,
     activeColor: Color,
     inactiveColor: Color,
+    textStyle: TextStyle,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val progressPct = (lineProgress.coerceIn(0f, 1f) * 100f).toInt()
+    val progressPct by remember(line, isSynced) {
+        derivedStateOf {
+            if (!isSynced) {
+                0
+            } else {
+                val p = calculateLineProgress(
+                    currentPositionMs = livePositionState.value,
+                    line = line,
+                    calibrateLongPause = true
+                )
+                (p.coerceIn(0f, 1f) * 100f).toInt()
+            }
+        }
+    }
+    val isCurrentActiveLine by remember(line, isSynced, isRowActiveIndex) {
+        derivedStateOf {
+            if (!isSynced) {
+                false
+            } else if (isRowActiveIndex) {
+                true
+            } else {
+                val p = calculateLineProgress(
+                    currentPositionMs = livePositionState.value,
+                    line = line,
+                    calibrateLongPause = true
+                )
+                p > 0f && p < 1f
+            }
+        }
+    }
 
     // Kích thước khung chứa dấu chấm tròn cố định (18.dp x 28.dp) để văn bản lời bài hát tuyệt đối không bị xô lệch
     val dotScale by animateFloatAsState(
@@ -597,18 +637,16 @@ private fun LyricLineRow(
             )
         }
 
-        // Giữ fontWeight đồng nhất (SemiBold) để không làm nhảy dòng hay xô lệch chữ khi đổi câu đang hát
-        val textStyle = MaterialTheme.typography.titleMedium.copy(
-            fontSize = 19.sp,
-            lineHeight = 28.sp,
-            fontWeight = FontWeight.SemiBold,
-            lineBreak = LineBreak.Paragraph
-        )
-
         if (isSynced) {
             ProgressLyricText(
                 text = line.text,
-                progress = lineProgress,
+                progressProvider = {
+                    calculateLineProgress(
+                        currentPositionMs = livePositionState.value,
+                        line = line,
+                        calibrateLongPause = true
+                    )
+                },
                 activeColor = activeColor,
                 inactiveColor = inactiveColor,
                 style = textStyle,
@@ -642,7 +680,25 @@ fun ProgressLyricText(
     modifier: Modifier = Modifier,
     style: TextStyle = MaterialTheme.typography.titleMedium
 ) {
-    val clampedProgress = progress.coerceIn(0f, 1f)
+    ProgressLyricText(
+        text = text,
+        progressProvider = { progress },
+        activeColor = activeColor,
+        inactiveColor = inactiveColor,
+        modifier = modifier,
+        style = style
+    )
+}
+
+@Composable
+private fun ProgressLyricText(
+    text: String,
+    progressProvider: () -> Float,
+    activeColor: Color,
+    inactiveColor: Color,
+    modifier: Modifier = Modifier,
+    style: TextStyle = MaterialTheme.typography.titleMedium
+) {
     var textLayoutResult by remember(text) { mutableStateOf<TextLayoutResult?>(null) }
 
     Box(modifier = modifier) {
@@ -656,85 +712,85 @@ fun ProgressLyricText(
             modifier = Modifier.fillMaxWidth()
         )
 
-        if (clampedProgress > 0f) {
-            Text(
-                text = text,
-                color = activeColor,
-                style = style,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .drawWithContent {
-                        if (clampedProgress >= 1f) {
-                            drawContent()
-                        } else if (clampedProgress > 0f) {
-                            val layout = textLayoutResult
-                            if (layout == null || layout.lineCount <= 1) {
-                                val lineLeft = layout?.getLineLeft(0) ?: 0f
-                                val lineRight = layout?.getLineRight(0) ?: size.width
-                                val lineWidth = (lineRight - lineLeft).coerceAtLeast(1f)
+        Text(
+            text = text,
+            color = activeColor,
+            style = style,
+            modifier = Modifier
+                .fillMaxWidth()
+                .drawWithContent {
+                    val clampedProgress = progressProvider().coerceIn(0f, 1f)
+                    if (clampedProgress <= 0f) return@drawWithContent
+                    if (clampedProgress >= 1f) {
+                        drawContent()
+                    } else {
+                        val layout = textLayoutResult
+                        if (layout == null || layout.lineCount <= 1) {
+                            val lineLeft = layout?.getLineLeft(0) ?: 0f
+                            val lineRight = layout?.getLineRight(0) ?: size.width
+                            val lineWidth = (lineRight - lineLeft).coerceAtLeast(1f)
+                            clipRect(
+                                left = 0f,
+                                top = 0f,
+                                right = (lineLeft + lineWidth * clampedProgress).coerceAtMost(size.width),
+                                bottom = size.height
+                            ) {
+                                this@drawWithContent.drawContent()
+                            }
+                        } else {
+                            val lineCount = layout.lineCount
+                            var totalTextWidth = 0f
+                            for (row in 0 until lineCount) {
+                                val w = (layout.getLineRight(row) - layout.getLineLeft(row)).coerceAtLeast(0f)
+                                totalTextWidth += w
+                            }
+
+                            if (totalTextWidth <= 0f) {
                                 clipRect(
                                     left = 0f,
                                     top = 0f,
-                                    right = (lineLeft + lineWidth * clampedProgress).coerceAtMost(size.width),
+                                    right = size.width * clampedProgress,
                                     bottom = size.height
                                 ) {
                                     this@drawWithContent.drawContent()
                                 }
                             } else {
-                                val lineCount = layout.lineCount
-                                var totalTextWidth = 0f
+                                var remainingFillWidth = totalTextWidth * clampedProgress
                                 for (row in 0 until lineCount) {
-                                    val w = (layout.getLineRight(row) - layout.getLineLeft(row)).coerceAtLeast(0f)
-                                    totalTextWidth += w
-                                }
+                                    if (remainingFillWidth <= 0f) break
+                                    val rowLeft = layout.getLineLeft(row)
+                                    val rowRight = layout.getLineRight(row)
+                                    val rowWidth = (rowRight - rowLeft).coerceAtLeast(0f)
+                                    val rowTop = layout.getLineTop(row)
+                                    val rowBottom = layout.getLineBottom(row)
 
-                                if (totalTextWidth <= 0f) {
-                                    clipRect(
-                                        left = 0f,
-                                        top = 0f,
-                                        right = size.width * clampedProgress,
-                                        bottom = size.height
-                                    ) {
-                                        this@drawWithContent.drawContent()
-                                    }
-                                } else {
-                                    var remainingFillWidth = totalTextWidth * clampedProgress
-                                    for (row in 0 until lineCount) {
-                                        if (remainingFillWidth <= 0f) break
-                                        val rowLeft = layout.getLineLeft(row)
-                                        val rowRight = layout.getLineRight(row)
-                                        val rowWidth = (rowRight - rowLeft).coerceAtLeast(0f)
-                                        val rowTop = layout.getLineTop(row)
-                                        val rowBottom = layout.getLineBottom(row)
-
-                                        if (remainingFillWidth >= rowWidth) {
-                                            clipRect(
-                                                left = 0f,
-                                                top = rowTop,
-                                                right = size.width,
-                                                bottom = rowBottom
-                                            ) {
-                                                this@drawWithContent.drawContent()
-                                            }
-                                            remainingFillWidth -= rowWidth
-                                        } else {
-                                            clipRect(
-                                                left = rowLeft,
-                                                top = rowTop,
-                                                right = (rowLeft + remainingFillWidth).coerceAtMost(size.width),
-                                                bottom = rowBottom
-                                            ) {
-                                                this@drawWithContent.drawContent()
-                                            }
-                                            remainingFillWidth = 0f
+                                    if (remainingFillWidth >= rowWidth) {
+                                        clipRect(
+                                            left = 0f,
+                                            top = rowTop,
+                                            right = size.width,
+                                            bottom = rowBottom
+                                        ) {
+                                            this@drawWithContent.drawContent()
                                         }
+                                        remainingFillWidth -= rowWidth
+                                    } else {
+                                        clipRect(
+                                            left = rowLeft,
+                                            top = rowTop,
+                                            right = (rowLeft + remainingFillWidth).coerceAtMost(size.width),
+                                            bottom = rowBottom
+                                        ) {
+                                            this@drawWithContent.drawContent()
+                                        }
+                                        remainingFillWidth = 0f
                                     }
                                 }
                             }
                         }
                     }
-            )
-        }
+                }
+        )
     }
 }
 
@@ -806,7 +862,7 @@ private fun HoaCaLoadingState(
             contentColor = MaterialTheme.colorScheme.onSecondaryContainer
         ) {
             Text(
-                text = "Tầng $tier / 3",
+                text = stringResource(R.string.lyrics_loading_tier_format, tier),
                 style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
             )

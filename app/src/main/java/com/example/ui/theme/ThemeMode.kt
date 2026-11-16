@@ -11,6 +11,12 @@ enum class ThemeMode(val id: String) {
     LIGHT("light"),
     DARK("dark");
 
+    fun next(): ThemeMode = when (this) {
+        SYSTEM -> LIGHT
+        LIGHT -> DARK
+        DARK -> SYSTEM
+    }
+
     companion object {
         fun fromId(id: String?): ThemeMode {
             return entries.firstOrNull { it.id == id } ?: SYSTEM

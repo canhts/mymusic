@@ -33,18 +33,23 @@ class PlaylistRepository(private val playlistDao: PlaylistDao) {
                     name = entity.name,
                     createdAt = entity.createdAt,
                     songs = resolvedSongs,
-                    playCount = entity.playCount
+                    playCount = entity.playCount,
+                    iconId = entity.iconId
                 )
             }
         }.flowOn(Dispatchers.Default)
     }
 
-    suspend fun createPlaylist(name: String): Long = withContext(Dispatchers.IO) {
+    suspend fun createPlaylist(name: String, iconId: String? = null): Long = withContext(Dispatchers.IO) {
         val cleanName = name.trim()
         require(cleanName.isNotEmpty()) { "Playlist name cannot be blank" }
         val nextOrder = (playlistDao.getMaxPlaylistSortOrder() ?: -1) + 1
         playlistDao.insertPlaylist(
-            PlaylistEntity(name = cleanName, sortOrder = nextOrder)
+            PlaylistEntity(
+                name = cleanName,
+                sortOrder = nextOrder,
+                iconId = iconId
+            )
         )
     }
 
@@ -52,6 +57,10 @@ class PlaylistRepository(private val playlistDao: PlaylistDao) {
         val cleanName = newName.trim()
         require(cleanName.isNotEmpty()) { "Playlist name cannot be blank" }
         playlistDao.updatePlaylistName(playlistId, cleanName)
+    }
+
+    suspend fun updatePlaylistIcon(playlistId: Long, iconId: String?) = withContext(Dispatchers.IO) {
+        playlistDao.updatePlaylistIcon(playlistId, iconId)
     }
 
     suspend fun reorderPlaylists(orderedIds: List<Long>) = withContext(Dispatchers.IO) {
@@ -69,20 +78,11 @@ class PlaylistRepository(private val playlistDao: PlaylistDao) {
 
     suspend fun addSongToPlaylists(songId: Long, playlistIds: List<Long>) = withContext(Dispatchers.IO) {
         if (playlistIds.isEmpty()) return@withContext
-        val now = System.currentTimeMillis()
-        for (playlistId in playlistIds.distinct()) {
-            val nextPos = (playlistDao.getMaxPosition(playlistId) ?: -1) + 1
-            playlistDao.insertPlaylistSongs(
-                listOf(
-                    PlaylistSongEntity(
-                        playlistId = playlistId,
-                        songId = songId,
-                        position = nextPos,
-                        addedAt = now
-                    )
-                )
-            )
-        }
+        playlistDao.addSongToAllPlaylists(
+            songId = songId,
+            playlistIds = playlistIds,
+            addedAt = System.currentTimeMillis()
+        )
     }
 
     suspend fun addSongsToPlaylist(playlistId: Long, songIds: List<Long>) = withContext(Dispatchers.IO) {

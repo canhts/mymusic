@@ -1,8 +1,11 @@
 package com.example.data
 
 import android.content.Context
+import android.content.res.Configuration
+import android.content.res.Resources
 import android.media.MediaMetadataRetriever
 import android.provider.MediaStore
+import com.example.R
 import com.example.data.local.LyricsCacheDao
 import com.example.data.local.LyricsCacheEntity
 import com.example.model.LyricLine
@@ -18,6 +21,7 @@ import java.net.URL
 import java.net.URLEncoder
 import java.security.MessageDigest
 import java.text.Normalizer
+import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.abs
 import kotlinx.coroutines.Dispatchers
@@ -75,6 +79,35 @@ class LyricsRepository(
     val offlineModelState: StateFlow<OfflineModelState> = offlineEngine.modelState
 
     private var activeSongId: Long? = null
+
+    @Volatile
+    private var activeLocale: Locale = Locale.forLanguageTag("vi-VN")
+
+    @Volatile
+    private var cachedLocaleKey: String? = null
+
+    @Volatile
+    private var cachedLocalizedResources: Resources? = null
+
+    fun setLocale(locale: Locale) {
+        activeLocale = locale
+    }
+
+    private fun localizedResources(): Resources {
+        val locale = activeLocale
+        val baseConfig = appContext.resources.configuration
+        val key = "${locale.toLanguageTag()}_${baseConfig.uiMode}"
+        cachedLocalizedResources?.let { cached ->
+            if (cachedLocaleKey == key) return cached
+        }
+        val config = Configuration(baseConfig).apply {
+            setLocale(locale)
+        }
+        val res = appContext.createConfigurationContext(config).resources
+        cachedLocalizedResources = res
+        cachedLocaleKey = key
+        return res
+    }
 
     /**
      * Tải lời bài hát cho bài đang phát (ưu tiên Cache cục bộ 0ms trước, sau đó chạy 3 tầng).
@@ -143,7 +176,7 @@ class LyricsRepository(
             // Tầng 1: Đọc Metadata nhúng sẵn trong file MP3 (ID3v2 SYLT / USLT / COMM)
             if (activeSongId == song.id) {
                 _uiState.value = LyricsUiState.Loading(
-                    statusText = "Đang đọc thẻ lời nhúng ID3v2 (SYLT/USLT)…",
+                    statusText = localizedResources().getString(R.string.lyrics_loading_tier1),
                     tier = 1
                 )
             }
@@ -176,7 +209,7 @@ class LyricsRepository(
             // Tầng 2: Đối chiếu Metadata qua API mở LRCLIB & nguồn lời bài hát trực tuyến
             if (activeSongId == song.id) {
                 _uiState.value = LyricsUiState.Loading(
-                    statusText = "Đang đối chiếu lời đồng bộ từ LRCLIB…",
+                    statusText = localizedResources().getString(R.string.lyrics_loading_tier2),
                     tier = 2
                 )
             }
@@ -236,7 +269,10 @@ class LyricsRepository(
                         songId = song.id,
                         songTitle = metadata.title,
                         artistName = metadata.artist,
-                        message = "Chưa tìm thấy lời bài hát cho \"${metadata.title}\". Hãy kiểm tra kết nối mạng và bấm Thử lại hoặc tải gói AI Offline.",
+                        message = localizedResources().getString(
+                            R.string.lyrics_error_song_not_found_offline,
+                            metadata.title
+                        ),
                         requiresOfflineModelDownload = true
                     )
                 }
@@ -245,7 +281,7 @@ class LyricsRepository(
 
             if (activeSongId == song.id) {
                 _uiState.value = LyricsUiState.Loading(
-                    statusText = "Đang giải mã PCM 16kHz & tách lời bằng AI Offline…",
+                    statusText = localizedResources().getString(R.string.lyrics_loading_tier3),
                     tier = 3
                 )
             }
@@ -271,7 +307,10 @@ class LyricsRepository(
                     songId = song.id,
                     songTitle = metadata.title,
                     artistName = metadata.artist,
-                    message = "Chưa tìm thấy lời bài hát cho \"${metadata.title}\". Hãy kiểm tra kết nối mạng và bấm Thử lại.",
+                    message = localizedResources().getString(
+                        R.string.lyrics_error_song_not_found_network,
+                        metadata.title
+                    ),
                     requiresOfflineModelDownload = false
                 )
             }
@@ -472,8 +511,9 @@ class LyricsRepository(
         }
 
         // Ứng viên từ MediaStore TITLE
-        if (!mediaStoreTitle.isNullOrBlank() && !isGenericUnknown(mediaStoreTitle)) {
-            addCandidatesFromRawString(mediaStoreTitle!!, cleanRetrieverArtist, candidates)
+        val msTitle = mediaStoreTitle
+        if (!msTitle.isNullOrBlank() && !isGenericUnknown(msTitle)) {
+            addCandidatesFromRawString(msTitle, cleanRetrieverArtist, candidates)
         }
 
         // Ứng viên từ tên file (song.title)
@@ -514,7 +554,7 @@ class LyricsRepository(
         val cleaned = sanitizeNoiseTokens(normalizedInput)
         if (cleaned.isBlank()) return
 
-        val parts = cleaned.split(Regex("""\s+[-–—|_]\s+"""))
+        val parts = cleaned.split(CANDIDATE_SPLIT_REGEX)
             .map { sanitizeNoiseTokens(it) }
             .filter { it.isNotBlank() && !isWebsiteOrHashToken(it) }
 
@@ -560,6 +600,10 @@ class LyricsRepository(
         private val FEATURING_REGEX = Regex("""\s+(?:ft\.?|feat\.?|featuring|x|&|,)\s+.*$""", RegexOption.IGNORE_CASE)
         private val MULTI_SPACE_REGEX = Regex("""\s{2,}""")
         private val DIACRITICS_REGEX = Regex("\\p{InCombiningDiacriticalMarks}+")
+        private val CANDIDATE_SPLIT_REGEX = Regex("""\s+[-–—|_]\s+""")
+        private val NUMERIC_HASH_TOKEN_REGEX = Regex("""^[0-9]{5,12}$""")
+        private val FILENAME_DASH_SPLIT_REGEX = Regex("""\s+-\s+""")
+        private val NON_ALNUM_SPACE_REGEX = Regex("""[^a-z0-9\s]""")
 
         private fun stripFileExtension(raw: String): String =
             raw.trim().replace(FILE_EXT_REGEX, "")
@@ -594,7 +638,7 @@ class LyricsRepository(
             val trimmed = token.trim()
             if (trimmed.isEmpty()) return true
             if (WEBSITE_PREFIX_SUFFIX_REGEX.matches(trimmed)) return true
-            if (trimmed.matches(Regex("""^[0-9]{5,12}$"""))) return true
+            if (NUMERIC_HASH_TOKEN_REGEX.matches(trimmed)) return true
             return false
         }
 
@@ -605,7 +649,7 @@ class LyricsRepository(
         fun parseTitleAndArtistFromFileName(fileName: String): Pair<String, String> {
             val withoutExt = normalizeHyphenatedSlugIfNeeded(stripFileExtension(fileName)).replace('_', ' ')
             val cleaned = sanitizeNoiseTokens(withoutExt)
-            val parts = cleaned.split(Regex("""\s+-\s+"""))
+            val parts = cleaned.split(FILENAME_DASH_SPLIT_REGEX)
                 .map { sanitizeNoiseTokens(it) }
                 .filter { it.isNotBlank() && !isWebsiteOrHashToken(it) }
 
@@ -652,7 +696,7 @@ class LyricsRepository(
             val nfd = Normalizer.normalize(input.lowercase(), Normalizer.Form.NFD)
             return DIACRITICS_REGEX.replace(nfd, "")
                 .replace('đ', 'd')
-                .replace(Regex("""[^a-z0-9\s]"""), " ")
+                .replace(NON_ALNUM_SPACE_REGEX, " ")
                 .replace(MULTI_SPACE_REGEX, " ")
                 .trim()
         }

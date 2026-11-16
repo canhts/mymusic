@@ -11,7 +11,8 @@ data class PlaylistEntity(
     val name: String,
     val sortOrder: Int = 0,
     val playCount: Int = 0,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    val iconId: String? = null
 )
 
 @Entity(

@@ -33,10 +33,12 @@ class MainActivity : ComponentActivity() {
 
             val isDarkTheme by viewModel.isDarkTheme.collectAsStateWithLifecycle()
             val themeColor by viewModel.themeColor.collectAsStateWithLifecycle()
+            val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
 
             MyApplicationTheme(
                 darkTheme = isDarkTheme,
-                themeColor = themeColor
+                themeColor = themeColor,
+                appLanguage = appLanguage
             ) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),

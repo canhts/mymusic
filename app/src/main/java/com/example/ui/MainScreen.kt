@@ -8,6 +8,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -21,7 +22,9 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -61,6 +64,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,6 +83,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.model.Playlist
 import com.example.model.Song
+import com.example.ui.theme.findHostActivity
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collectLatest
@@ -90,17 +95,20 @@ internal const val INACTIVITY_AUTO_COLLAPSE_TIMEOUT_MS = 60_000L
  * Phát hiện mọi thao tác chạm/kéo của người dùng ở bất kỳ vị trí nào trên ứng dụng
  * để làm mới bộ đếm 1 phút không tương tác mà không cản trở cử chỉ của các thành phần con.
  */
-internal fun Modifier.observeUserTouch(onUserTouch: () -> Unit): Modifier =
-    this.pointerInput(onUserTouch) {
+@Composable
+internal fun Modifier.observeUserTouch(onUserTouch: () -> Unit): Modifier {
+    val currentOnUserTouch by rememberUpdatedState(onUserTouch)
+    return this.pointerInput(Unit) {
         awaitPointerEventScope {
             while (true) {
                 val event = awaitPointerEvent(PointerEventPass.Initial)
                 if (event.changes.any { it.pressed || it.previousPressed }) {
-                    onUserTouch()
+                    currentOnUserTouch()
                 }
             }
         }
     }
+}
 
 @Composable
 fun MainScreen(
@@ -111,6 +119,7 @@ fun MainScreen(
     val isDarkTheme by viewModel.isDarkTheme.collectAsStateWithLifecycle()
     val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
     val themeColor by viewModel.themeColor.collectAsStateWithLifecycle()
+    val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
     val hasSeenOnboarding by viewModel.hasSeenOnboarding.collectAsStateWithLifecycle()
     val isPlayerPillCollapsed by viewModel.isPlayerPillCollapsed.collectAsStateWithLifecycle()
     val songs by viewModel.songs.collectAsStateWithLifecycle()
@@ -120,6 +129,7 @@ fun MainScreen(
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
     val lyricsUiState by viewModel.lyricsUiState.collectAsStateWithLifecycle()
     val offlineModelState by viewModel.offlineModelState.collectAsStateWithLifecycle()
+    val audioSpectrumProfile by viewModel.audioSpectrumProfile.collectAsStateWithLifecycle()
     val bassStrength by viewModel.bassStrength.collectAsStateWithLifecycle()
     val trebleStrength by viewModel.trebleStrength.collectAsStateWithLifecycle()
     val vocalStrength by viewModel.vocalStrength.collectAsStateWithLifecycle()
@@ -229,8 +239,26 @@ fun MainScreen(
     var playlistPendingDelete by remember { mutableStateOf<Playlist?>(null) }
     var songToAddToPlaylist by remember { mutableStateOf<Song?>(null) }
     var playlistToAddSongs by remember { mutableStateOf<Playlist?>(null) }
+    var showNowPlayingScreen by remember { mutableStateOf(false) }
     var isHoaCaReturnToActiveVisible by remember { mutableStateOf(false) }
     var hoaCaReturnToActiveTick by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(playbackState.currentSong?.id) {
+        if (playbackState.currentSong == null) {
+            showNowPlayingScreen = false
+        }
+    }
+
+    LaunchedEffect(showNowPlayingScreen, playbackState.currentSong?.id) {
+        val song = playbackState.currentSong
+        if (showNowPlayingScreen && song != null) {
+            viewModel.ensureAudioSpectrumAnalysis(
+                song = song,
+                durationMs = playbackState.durationMs,
+                positionMs = viewModel.currentPositionMs.value
+            )
+        }
+    }
 
     LaunchedEffect(currentTab, playbackState.currentSong?.id) {
         if (currentTab != MainTab.SING || playbackState.currentSong == null) {
@@ -258,14 +286,15 @@ fun MainScreen(
     }
 
     BackHandler(
-        enabled = showSettingsPopup || showCurrentQueueSheet ||
+        enabled = showNowPlayingScreen || showSettingsPopup || showCurrentQueueSheet ||
             carouselSheetPlaylistId != null ||
             songToAddToPlaylist != null || playlistToAddSongs != null ||
             (currentTab == MainTab.PLAYLISTS && selectedPlaylistId != null)
     ) {
         when {
-            showSettingsPopup -> showSettingsPopup = false
             showCurrentQueueSheet -> showCurrentQueueSheet = false
+            showNowPlayingScreen -> showNowPlayingScreen = false
+            showSettingsPopup -> showSettingsPopup = false
             carouselSheetPlaylistId != null -> carouselSheetPlaylistId = null
             songToAddToPlaylist != null -> songToAddToPlaylist = null
             playlistToAddSongs != null -> playlistToAddSongs = null
@@ -393,6 +422,7 @@ fun MainScreen(
                                     onAddToPlaylist = { song -> songToAddToPlaylist = song },
                                     onRenameSong = viewModel::renameSong,
                                     onDeleteSong = viewModel::deleteSong,
+                                    onOpenPlayer = { showNowPlayingScreen = true },
                                     contentTopPadding = listTopPadding,
                                     contentBottomPadding = listBottomPadding,
                                     isDarkTheme = isDarkTheme,
@@ -434,12 +464,16 @@ fun MainScreen(
                                     onRenamePlaylist = { newName ->
                                         viewModel.renamePlaylist(detailPlaylist, newName)
                                     },
+                                    onUpdatePlaylistIcon = { iconId ->
+                                        viewModel.updatePlaylistIcon(detailPlaylist, iconId)
+                                    },
                                     onSongClick = { song ->
                                         viewModel.onSongClickedFromPlaylist(detailPlaylist, song)
                                     },
                                     onRemoveSongFromPlaylist = { song ->
                                         viewModel.removeSongFromPlaylist(detailPlaylist, song)
                                     },
+                                    onOpenPlayer = { showNowPlayingScreen = true },
                                     contentTopPadding = listTopPadding,
                                     contentBottomPadding = listBottomPadding,
                                     isDarkTheme = isDarkTheme,
@@ -563,8 +597,10 @@ fun MainScreen(
                 isDarkTheme = isDarkTheme,
                 selectedThemeMode = themeMode,
                 selectedThemeColor = themeColor,
+                selectedLanguage = appLanguage,
                 onSelectThemeMode = viewModel::setThemeMode,
                 onSelectThemeColor = viewModel::setThemeColor,
+                onSelectLanguage = viewModel::setAppLanguage,
                 onToggleTheme = viewModel::toggleTheme,
                 bassStrength = bassStrength,
                 trebleStrength = trebleStrength,
@@ -576,7 +612,7 @@ fun MainScreen(
                 onVirtualizerChange = viewModel::onVirtualizerStrengthChange,
                 onExitApp = {
                     showSettingsPopup = false
-                    val activity = context as? Activity
+                    val activity = context.findHostActivity()
                     viewModel.exitApp(activity)
                 },
                 onDismiss = { showSettingsPopup = false }
@@ -585,9 +621,9 @@ fun MainScreen(
 
         if (showCreatePlaylistDialog) {
             CreatePlaylistDialog(
-                onConfirmCreate = { name ->
+                onConfirmCreate = { name, iconId ->
                     showCreatePlaylistDialog = false
-                    viewModel.createPlaylist(name)
+                    viewModel.createPlaylist(name, iconId = iconId)
                 },
                 onDismiss = { showCreatePlaylistDialog = false }
             )
@@ -643,6 +679,11 @@ fun MainScreen(
                 isPlaying = playbackState.isPlaying,
                 activePlaylistName = activePlaylistName,
                 onSelectSong = viewModel::onSelectSongFromQueue,
+                onOpenPlayer = if (showNowPlayingScreen) {
+                    null
+                } else {
+                    { showNowPlayingScreen = true }
+                },
                 onDismiss = { showCurrentQueueSheet = false }
             )
         }
@@ -659,8 +700,61 @@ fun MainScreen(
                 onSelectSong = { song ->
                     viewModel.onSongClickedFromPlaylist(sheetPlaylist, song)
                 },
+                onOpenPlayer = { showNowPlayingScreen = true },
                 onDismiss = { carouselSheetPlaylistId = null }
             )
+        }
+
+        val activePlayerSong = playbackState.currentSong
+        AnimatedVisibility(
+            visible = showNowPlayingScreen && activePlayerSong != null,
+            enter = fadeIn(tween(240)) +
+                slideInVertically(
+                    initialOffsetY = { it / 5 },
+                    animationSpec = spring(
+                        dampingRatio = 0.78f,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                ) +
+                scaleIn(
+                    initialScale = 0.95f,
+                    animationSpec = spring(
+                        dampingRatio = 0.78f,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                ),
+            exit = fadeOut(tween(180)) +
+                slideOutVertically(
+                    targetOffsetY = { it / 4 },
+                    animationSpec = tween(180)
+                ) +
+                scaleOut(
+                    targetScale = 0.96f,
+                    animationSpec = tween(180)
+                ),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            if (activePlayerSong != null) {
+                NowPlayingScreen(
+                    song = activePlayerSong,
+                    isPlaying = playbackState.isPlaying,
+                    playMode = playbackState.playMode,
+                    themeMode = themeMode,
+                    durationMs = playbackState.durationMs,
+                    currentPositionMsFlow = viewModel.currentPositionMs,
+                    audioSpectrumProfile = audioSpectrumProfile,
+                    isDarkTheme = isDarkTheme,
+                    onBack = { showNowPlayingScreen = false },
+                    onTogglePlayPause = viewModel::onTogglePlayPause,
+                    onPlayNext = viewModel::onPlayNext,
+                    onPlayPrevious = viewModel::onPlayPrevious,
+                    onSeekTo = viewModel::onSeekTo,
+                    onCyclePlayMode = viewModel::onCyclePlayMode,
+                    onCycleThemeMode = viewModel::cycleThemeMode,
+                    onOpenQueue = { showCurrentQueueSheet = true },
+                    modifier = Modifier.fillMaxSize()
+                )
+            }
         }
     }
     }

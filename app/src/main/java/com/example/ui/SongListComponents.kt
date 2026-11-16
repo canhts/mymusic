@@ -78,6 +78,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
@@ -86,9 +87,12 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
 import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.unit.lerp as lerpDp
 import kotlin.math.PI
 import kotlin.math.sin
 import androidx.compose.ui.input.pointer.pointerInput
@@ -98,6 +102,8 @@ import androidx.compose.ui.layout.layoutId
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -109,8 +115,17 @@ import com.example.R
 import com.example.model.PlaybackState
 import com.example.model.Playlist
 import com.example.model.Song
+import com.example.ui.theme.LocalizedAppScope
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+
+private val CAROUSEL_UNIT_GLOW_BRUSH: Brush by lazy(LazyThreadSafetyMode.PUBLICATION) {
+    Brush.radialGradient(
+        colors = listOf(Color.White, Color.Transparent),
+        center = Offset.Zero,
+        radius = 100f
+    )
+}
 
 @Composable
 internal fun CapsuleSearchField(
@@ -208,6 +223,7 @@ internal fun SongList(
     onAddToPlaylist: (Song) -> Unit,
     onRenameSong: (Song, String) -> Unit,
     onDeleteSong: (Song) -> Unit,
+    onOpenPlayer: (() -> Unit)? = null,
     contentTopPadding: Dp,
     contentBottomPadding: Dp,
     isDarkTheme: Boolean,
@@ -419,6 +435,7 @@ internal fun SongList(
                         onRename = onCardRename,
                         onDelete = onCardDelete,
                         onRemoveFromPlaylist = null,
+                        onOpenPlayer = onOpenPlayer,
                         isDarkTheme = isDarkTheme,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -481,7 +498,13 @@ internal fun PlaylistCarouselCard(
 
     val cardSource = remember { MutableInteractionSource() }
     val playBtnSource = remember { MutableInteractionSource() }
-    val noteScratchPath = remember { Path() }
+    val resolvedIcon = remember(playlist.iconId) { PlaylistIconCatalog.resolveOrDefault(playlist.iconId) }
+    val watermarkPainter = rememberVectorPainter(image = resolvedIcon.vector)
+    val accentColor = if (isActiveQueue) primaryColor else tertiaryColor
+    val accentGlowFilter = remember(accentColor) { ColorFilter.tint(accentColor) }
+    val watermarkTint = remember(isActiveQueue, titleColor, primaryColor) {
+        if (isActiveQueue) primaryColor else lerp(titleColor, primaryColor, 0.42f)
+    }
 
     Surface(
         shape = MaterialTheme.shapes.extraLarge,
@@ -503,16 +526,22 @@ internal fun PlaylistCarouselCard(
             modifier = Modifier
                 .fillMaxSize()
                 .drawBehind {
-                    val accent = if (isActiveQueue) primaryColor else tertiaryColor
                     val mask = maskRectProvider()
-                    val visibleLeftPx = if (mask.width > 1f) mask.left.coerceAtLeast(0f) else 0f
-                    val visibleRightPx = if (mask.width > 1f) mask.right.coerceAtMost(size.width) else size.width
-                    val visibleWidthPx = (visibleRightPx - visibleLeftPx).coerceAtLeast(1f)
+                    val rawItemSize = itemSizeProvider()
+                    val visibleWidthPx: Float
+                    val visibleLeftPx: Float
+                    if (mask.width > 1f) {
+                        visibleWidthPx = mask.width.coerceIn(1f, size.width)
+                        visibleLeftPx = mask.left.coerceIn(0f, (size.width - visibleWidthPx).coerceAtLeast(0f))
+                    } else {
+                        visibleWidthPx = if (rawItemSize > 1f) rawItemSize.coerceIn(1f, size.width) else size.width
+                        visibleLeftPx = 0f
+                    }
+                    val visibleRightPx = (visibleLeftPx + visibleWidthPx).coerceAtMost(size.width)
                     val widthDp = visibleWidthPx / density
 
-                    // Độ đậm nhạt của hoa văn nốt nhạc nghệ thuật chìm biến thiên mượt theo kích thước thực tế của mỗi thẻ
                     val detailFactor = ((widthDp - 50f) / 106f).coerceIn(0.28f, 1f)
-                    val baseNoteAlpha = (if (isActiveQueue) 0.135f else 0.095f) * (0.65f + 0.35f * detailFactor)
+                    val baseNoteAlpha = (if (isActiveQueue) 0.095f else 0.072f) * (0.72f + 0.28f * detailFactor)
 
                     clipRect(
                         left = visibleLeftPx,
@@ -520,84 +549,47 @@ internal fun PlaylistCarouselCard(
                         right = visibleRightPx,
                         bottom = size.height
                     ) {
-                        // 1. Quầng sáng nền nghệ thuật ở góc trên trái và góc dưới phải của vùng nhìn thấy
-                        val glowCenter = Offset(
-                            x = visibleLeftPx + visibleWidthPx * 0.24f,
-                            y = size.height * 0.20f
-                        )
+                        val glowCenterX = visibleLeftPx + visibleWidthPx * 0.24f
+                        val glowCenterY = size.height * 0.20f
                         val glowRadius = visibleWidthPx.coerceAtLeast(size.height) * 0.82f
-                        drawCircle(
-                            brush = Brush.radialGradient(
-                                colors = listOf(
-                                    accent.copy(alpha = if (isActiveQueue) 0.18f else 0.11f),
-                                    Color.Transparent
-                                ),
-                                center = glowCenter,
-                                radius = glowRadius
-                            ),
-                            radius = glowRadius,
-                            center = glowCenter
-                        )
-
-                        // 2. Dải khuông nhạc lượn sóng thư pháp (3 đường cong Bézier mảnh chìm dưới nền)
-                        drawSubmergedMusicalStaffRibbons(
-                            visibleLeftPx = visibleLeftPx,
-                            visibleWidthPx = visibleWidthPx,
-                            cardHeightPx = size.height,
-                            color = accent.copy(alpha = baseNoteAlpha * 0.46f),
-                            scratchPath = noteScratchPath
-                        )
-
-                        // 3. Hoa văn nốt nhạc đôi thư pháp (♬/♫) chủ đạo với dải nối uốn lượn & vòng hào quang cộng hưởng
-                        val primaryNoteScale = minOf(visibleWidthPx * 0.58f, size.height * 0.50f).coerceAtLeast(20f)
-                        val primaryNoteCenter = Offset(
-                            x = visibleLeftPx + visibleWidthPx * 0.68f,
-                            y = size.height * 0.45f
-                        )
-                        drawSubmergedBeamedNotes(
-                            center = primaryNoteCenter,
-                            noteSize = primaryNoteScale,
-                            color = accent.copy(alpha = baseNoteAlpha),
-                            scratchPath = noteScratchPath,
-                            rotationDegrees = -12f
-                        )
-
-                        // 4. Hoa văn nốt nhạc đơn (♪) đuôi lụa kép ở góc dưới trái khi thẻ mở rộng vừa/lớn
-                        if (widthDp > 70f) {
-                            val secondaryAlpha = baseNoteAlpha * 0.74f * ((widthDp - 70f) / 46f).coerceIn(0f, 1f)
-                            val secondaryScale = minOf(visibleWidthPx * 0.36f, size.height * 0.34f).coerceAtLeast(15f)
-                            val secondaryCenter = Offset(
-                                x = visibleLeftPx + visibleWidthPx * 0.30f,
-                                y = size.height * 0.64f
-                            )
-                            drawSubmergedSingleEighthNote(
-                                center = secondaryCenter,
-                                noteSize = secondaryScale,
-                                color = accent.copy(alpha = secondaryAlpha),
-                                scratchPath = noteScratchPath,
-                                rotationDegrees = 14f
+                        val glowScale = glowRadius / 100f
+                        val glowAlpha = if (isActiveQueue) 0.18f else 0.11f
+                        withTransform({
+                            translate(left = glowCenterX, top = glowCenterY)
+                            scale(scaleX = glowScale, scaleY = glowScale, pivot = Offset.Zero)
+                        }) {
+                            drawCircle(
+                                brush = CAROUSEL_UNIT_GLOW_BRUSH,
+                                radius = 100f,
+                                center = Offset.Zero,
+                                alpha = glowAlpha,
+                                colorFilter = accentGlowFilter
                             )
                         }
 
-                        // 5. Nốt nhạc phụ bay bổng (♪) kèm chấm staccato tạo chiều sâu không gian khi thẻ ở trạng thái lớn
-                        if (widthDp > 116f) {
-                            val tertiaryAlpha = baseNoteAlpha * 0.56f * ((widthDp - 116f) / 38f).coerceIn(0f, 1f)
-                            val tertiaryScale = (size.height * 0.24f).coerceAtLeast(13f)
-                            val tertiaryCenter = Offset(
-                                x = visibleLeftPx + visibleWidthPx * 0.46f,
-                                y = size.height * 0.24f
-                            )
-                            drawSubmergedSingleEighthNote(
-                                center = tertiaryCenter,
-                                noteSize = tertiaryScale,
-                                color = accent.copy(alpha = tertiaryAlpha),
-                                scratchPath = noteScratchPath,
-                                rotationDegrees = -9f
-                            )
-                        }
+                        val watermarkSize = minOf(visibleWidthPx * 1.14f, size.height * 0.94f).coerceAtLeast(36f)
+                        val watermarkXFraction = resolveCarouselWatermarkCenterXFraction(widthDp)
+                        val watermarkCenter = Offset(
+                            x = visibleLeftPx + visibleWidthPx * watermarkXFraction,
+                            y = size.height * 0.50f
+                        )
+                        drawSoftPlaylistWatermark(
+                            painter = watermarkPainter,
+                            center = watermarkCenter,
+                            iconSizePx = watermarkSize,
+                            tint = watermarkTint,
+                            alpha = baseNoteAlpha,
+                            rotationDegrees = -14f
+                        )
                     }
                 }
         ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .semantics { stateDescription = resolvedIcon.id }
+                    .testTag("carousel_playlist_watermark_${playlist.id}")
+            )
             Layout(
                 modifier = Modifier.fillMaxSize(),
                 content = {
@@ -798,6 +790,7 @@ internal fun UniformSongCard(
     onRename: ((String) -> Unit)? = null,
     onDelete: (() -> Unit)? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null,
+    onOpenPlayer: (() -> Unit)? = null,
     isDarkTheme: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -990,91 +983,38 @@ internal fun UniformSongCard(
     val deleteOffsetX: Dp
 
     if (hasEverRevealedActions) {
-        val animLeftIconW by animateDpAsState(
-            targetValue = if (isActionsRevealed) 0.dp else 22.dp,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
-            label = "left_icon_width"
-        )
-        val animLeftIconOffX by animateDpAsState(
-            targetValue = if (isActionsRevealed) (-24).dp else 0.dp,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
-            label = "left_icon_offset"
-        )
-        val animLeftIconA by animateFloatAsState(
-            targetValue = if (isActionsRevealed) 0f else 1f,
-            animationSpec = tween(120),
-            label = "left_icon_alpha"
-        )
-        val animLeftSpacerW by animateDpAsState(
-            targetValue = if (isActionsRevealed) 0.dp else 6.dp,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMedium),
-            label = "left_spacer_width"
-        )
-        val animActionsW by animateDpAsState(
-            targetValue = if (isActionsRevealed) targetActionsWidth else 0.dp,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioLowBouncy, stiffness = Spring.StiffnessMedium),
-            label = "actions_container_width"
-        )
-        val animFirstS by animateFloatAsState(
-            targetValue = if (isActionsRevealed) 1f else 0.2f,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-            label = "first_action_scale"
-        )
-        val animFirstA by animateFloatAsState(
+        val revealSpringProgress by animateFloatAsState(
             targetValue = if (isActionsRevealed) 1f else 0f,
-            animationSpec = tween(120),
-            label = "first_action_alpha"
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioLowBouncy,
+                stiffness = Spring.StiffnessMedium
+            ),
+            label = "actions_reveal_spring"
         )
-        val animFirstOffX by animateDpAsState(
-            targetValue = if (isActionsRevealed) 0.dp else 16.dp,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-            label = "first_action_offset"
-        )
-        val animEditS by animateFloatAsState(
-            targetValue = if (isActionsRevealed) 1f else 0.2f,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-            label = "edit_scale"
-        )
-        val animEditA by animateFloatAsState(
+        val revealAlphaProgress by animateFloatAsState(
             targetValue = if (isActionsRevealed) 1f else 0f,
-            animationSpec = tween(120, delayMillis = 15),
-            label = "edit_alpha"
-        )
-        val animEditOffX by animateDpAsState(
-            targetValue = if (isActionsRevealed) 0.dp else 32.dp,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-            label = "edit_offset"
-        )
-        val animDelS by animateFloatAsState(
-            targetValue = if (isActionsRevealed) 1f else 0.2f,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-            label = "delete_scale"
-        )
-        val animDelA by animateFloatAsState(
-            targetValue = if (isActionsRevealed) 1f else 0f,
-            animationSpec = tween(120, delayMillis = 30),
-            label = "delete_alpha"
-        )
-        val animDelOffX by animateDpAsState(
-            targetValue = if (isActionsRevealed) 0.dp else 48.dp,
-            animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium),
-            label = "delete_offset"
+            animationSpec = tween(durationMillis = 150),
+            label = "actions_reveal_alpha"
         )
 
-        leftIconWidth = animLeftIconW
-        leftIconOffsetX = animLeftIconOffX
-        leftIconAlpha = animLeftIconA
-        leftSpacerWidth = animLeftSpacerW
-        actionsContainerWidth = animActionsW
-        firstScale = animFirstS
-        firstAlpha = animFirstA
-        firstOffsetX = animFirstOffX
-        editScale = animEditS
-        editAlpha = animEditA
-        editOffsetX = animEditOffX
-        deleteScale = animDelS
-        deleteAlpha = animDelA
-        deleteOffsetX = animDelOffX
+        val unitSpring = revealSpringProgress.coerceIn(0f, 1f)
+        leftIconWidth = lerpDp(22.dp, 0.dp, unitSpring)
+        leftIconOffsetX = lerpDp(0.dp, (-24).dp, unitSpring)
+        leftIconAlpha = (1f - revealAlphaProgress).coerceIn(0f, 1f)
+        leftSpacerWidth = lerpDp(6.dp, 0.dp, unitSpring)
+        actionsContainerWidth = (targetActionsWidth * revealSpringProgress).coerceAtLeast(0.dp)
+
+        firstScale = (0.2f + 0.8f * revealSpringProgress).coerceAtLeast(0.2f)
+        firstAlpha = (revealAlphaProgress * 1.25f).coerceIn(0f, 1f)
+        firstOffsetX = 16.dp * (1f - revealSpringProgress)
+
+        editScale = (0.2f + 0.8f * revealSpringProgress).coerceAtLeast(0.2f)
+        editAlpha = ((revealAlphaProgress - 0.10f) * 1.25f).coerceIn(0f, 1f)
+        editOffsetX = 32.dp * (1f - revealSpringProgress)
+
+        deleteScale = (0.2f + 0.8f * revealSpringProgress).coerceAtLeast(0.2f)
+        deleteAlpha = ((revealAlphaProgress - 0.20f) * 1.25f).coerceIn(0f, 1f)
+        deleteOffsetX = 48.dp * (1f - revealSpringProgress)
     } else {
         leftIconWidth = 22.dp
         leftIconOffsetX = 0.dp
@@ -1205,16 +1145,25 @@ internal fun UniformSongCard(
 
                     if (!isActionsRevealed) {
                         Spacer(modifier = Modifier.width(6.dp))
-                        SongCardTimeDisplay(
-                            isActive = false,
-                            currentPositionMsFlow = null,
-                            durationMs = song.duration,
-                            isDraggingState = emptyDraggingState,
-                            dragFractionState = emptyDragFracState,
-                            contentColor = contentColor,
-                            isDarkTheme = isDarkTheme,
-                            waveSyncState = null
-                        )
+                        if (isHighlighted && onOpenPlayer != null) {
+                            SelectedSongOpenPlayerButton(
+                                onClick = onOpenPlayer,
+                                tint = primaryColor,
+                                containerColor = primaryColor.copy(alpha = 0.14f),
+                                modifier = Modifier.testTag("btn_open_player_${song.id}")
+                            )
+                        } else {
+                            SongCardTimeDisplay(
+                                isActive = false,
+                                currentPositionMsFlow = null,
+                                durationMs = song.duration,
+                                isDraggingState = emptyDraggingState,
+                                dragFractionState = emptyDragFracState,
+                                contentColor = contentColor,
+                                isDarkTheme = isDarkTheme,
+                                waveSyncState = null
+                            )
+                        }
                     }
                 }
             }
@@ -1495,46 +1444,54 @@ internal fun UniformSongCard(
         AlertDialog(
             onDismissRequest = { showEditDialog = false },
             title = {
-                Text(
-                    text = stringResource(R.string.edit_song_dialog_title),
-                    style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                )
-            },
-            text = {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = editSongNameText,
-                        onValueChange = { editSongNameText = it },
-                        label = { Text(stringResource(R.string.edit_song_name_label)) },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .testTag("input_edit_song_name")
+                LocalizedAppScope {
+                    Text(
+                        text = stringResource(R.string.edit_song_dialog_title),
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
                     )
                 }
             },
+            text = {
+                LocalizedAppScope {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = editSongNameText,
+                            onValueChange = { editSongNameText = it },
+                            label = { Text(stringResource(R.string.edit_song_name_label)) },
+                            singleLine = true,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("input_edit_song_name")
+                        )
+                    }
+                }
+            },
             confirmButton = {
-                val editConfirmSource = remember { MutableInteractionSource() }
-                Button(
-                    onClick = debouncedConfirmEdit,
-                    interactionSource = editConfirmSource,
-                    modifier = Modifier
-                        .springPress(scaleDown = 0.92f, interactionSource = editConfirmSource)
-                        .testTag("btn_confirm_edit")
-                ) {
-                    Text(stringResource(R.string.action_save))
+                LocalizedAppScope {
+                    val editConfirmSource = remember { MutableInteractionSource() }
+                    Button(
+                        onClick = debouncedConfirmEdit,
+                        interactionSource = editConfirmSource,
+                        modifier = Modifier
+                            .springPress(scaleDown = 0.92f, interactionSource = editConfirmSource)
+                            .testTag("btn_confirm_edit")
+                    ) {
+                        Text(stringResource(R.string.action_save))
+                    }
                 }
             },
             dismissButton = {
-                val editCancelSource = remember { MutableInteractionSource() }
-                TextButton(
-                    onClick = { showEditDialog = false },
-                    interactionSource = editCancelSource,
-                    modifier = Modifier
-                        .springPress(scaleDown = 0.92f, interactionSource = editCancelSource)
-                        .testTag("btn_cancel_edit")
-                ) {
-                    Text(stringResource(R.string.action_cancel))
+                LocalizedAppScope {
+                    val editCancelSource = remember { MutableInteractionSource() }
+                    TextButton(
+                        onClick = { showEditDialog = false },
+                        interactionSource = editCancelSource,
+                        modifier = Modifier
+                            .springPress(scaleDown = 0.92f, interactionSource = editCancelSource)
+                            .testTag("btn_cancel_edit")
+                    ) {
+                        Text(stringResource(R.string.action_cancel))
+                    }
                 }
             },
             shape = RoundedCornerShape(24.dp)
@@ -1554,271 +1511,8 @@ internal fun resolveSongCardCornerTarget(
     else -> defaultRadius
 }
 
-/**
- * Vẽ dải khuông nhạc 3 đường cong lụa (Flowing Musical Staff Ribbons) chìm dưới nền thẻ Carousel.
- */
-private fun DrawScope.drawSubmergedMusicalStaffRibbons(
-    visibleLeftPx: Float,
-    visibleWidthPx: Float,
-    cardHeightPx: Float,
-    color: Color,
-    scratchPath: Path
-) {
-    val lineStroke = (cardHeightPx * 0.0085f).coerceAtLeast(1.0f)
-    val startX = visibleLeftPx - visibleWidthPx * 0.06f
-    val endX = visibleLeftPx + visibleWidthPx * 1.06f
-    val spanX = endX - startX
-
-    for (i in 0..2) {
-        val offsetFactor = (i - 1) * 0.055f
-        val startY = cardHeightPx * (0.68f + offsetFactor)
-        val ctrl1Y = cardHeightPx * (0.46f + offsetFactor * 0.9f)
-        val ctrl2Y = cardHeightPx * (0.76f + offsetFactor * 1.1f)
-        val endY = cardHeightPx * (0.34f + offsetFactor)
-
-        scratchPath.reset()
-        scratchPath.moveTo(startX, startY)
-        scratchPath.cubicTo(
-            startX + spanX * 0.34f, ctrl1Y,
-            startX + spanX * 0.66f, ctrl2Y,
-            endX, endY
-        )
-        drawPath(
-            path = scratchPath,
-            color = color.copy(alpha = color.alpha * (1f - i * 0.18f)),
-            style = Stroke(width = lineStroke, cap = StrokeCap.Round)
-        )
-    }
+internal fun resolveCarouselWatermarkCenterXFraction(visibleWidthDp: Float): Float {
+    val expandT = ((visibleWidthDp - 64f) / 36f).coerceIn(0f, 1f)
+    return 0.50f + (0.65f - 0.50f) * expandT
 }
-
-/**
- * Vẽ hoa văn nốt nhạc đôi nghệ thuật (♬ / ♫) với đầu nốt thư pháp nghiêng,
- * vòng hào quang cộng hưởng âm thanh và dải nối kép uốn cong mềm mại.
- */
-private fun DrawScope.drawSubmergedBeamedNotes(
-    center: Offset,
-    noteSize: Float,
-    color: Color,
-    scratchPath: Path,
-    rotationDegrees: Float = -12f
-) {
-    // Vòng hào quang âm thanh đồng tâm mảnh quanh cụm nốt nhạc chính
-    val ringStroke = (noteSize * 0.018f).coerceAtLeast(0.9f)
-    drawCircle(
-        color = color.copy(alpha = color.alpha * 0.32f),
-        radius = noteSize * 0.56f,
-        center = center,
-        style = Stroke(width = ringStroke)
-    )
-    drawCircle(
-        color = color.copy(alpha = color.alpha * 0.18f),
-        radius = noteSize * 0.74f,
-        center = center,
-        style = Stroke(width = ringStroke * 0.85f)
-    )
-
-    rotate(degrees = rotationDegrees, pivot = center) {
-        val headWidth = noteSize * 0.31f
-        val headHeight = noteSize * 0.21f
-        val stemHeight = noteSize * 0.70f
-        val stemStroke = (noteSize * 0.064f).coerceAtLeast(1.3f)
-        val noteSpacing = noteSize * 0.46f
-        val beamSlope = noteSize * 0.14f
-        val beamThickness = (noteSize * 0.115f).coerceAtLeast(2.0f)
-
-        val leftHeadCenter = Offset(
-            x = center.x - noteSpacing * 0.5f,
-            y = center.y + stemHeight * 0.34f
-        )
-        val rightHeadCenter = Offset(
-            x = center.x + noteSpacing * 0.5f,
-            y = leftHeadCenter.y - beamSlope
-        )
-
-        // Đầu nốt nhạc trái & phải nghiêng chuẩn thư pháp (-24 độ) kèm viền hào quang dịu
-        rotate(degrees = -24f, pivot = leftHeadCenter) {
-            drawOval(
-                color = color.copy(alpha = color.alpha * 0.36f),
-                topLeft = Offset(
-                    x = leftHeadCenter.x - headWidth * 0.64f,
-                    y = leftHeadCenter.y - headHeight * 0.64f
-                ),
-                size = Size(headWidth * 1.28f, headHeight * 1.28f)
-            )
-            drawOval(
-                color = color,
-                topLeft = Offset(
-                    x = leftHeadCenter.x - headWidth * 0.5f,
-                    y = leftHeadCenter.y - headHeight * 0.5f
-                ),
-                size = Size(headWidth, headHeight)
-            )
-        }
-        rotate(degrees = -24f, pivot = rightHeadCenter) {
-            drawOval(
-                color = color.copy(alpha = color.alpha * 0.36f),
-                topLeft = Offset(
-                    x = rightHeadCenter.x - headWidth * 0.64f,
-                    y = rightHeadCenter.y - headHeight * 0.64f
-                ),
-                size = Size(headWidth * 1.28f, headHeight * 1.28f)
-            )
-            drawOval(
-                color = color,
-                topLeft = Offset(
-                    x = rightHeadCenter.x - headWidth * 0.5f,
-                    y = rightHeadCenter.y - headHeight * 0.5f
-                ),
-                size = Size(headWidth, headHeight)
-            )
-        }
-
-        // Thân nốt nhạc trái và phải
-        val leftStemX = leftHeadCenter.x + headWidth * 0.38f
-        val rightStemX = rightHeadCenter.x + headWidth * 0.38f
-        val leftStemTopY = leftHeadCenter.y - stemHeight
-        val rightStemTopY = rightHeadCenter.y - stemHeight
-
-        drawLine(
-            color = color,
-            start = Offset(leftStemX, leftHeadCenter.y - headHeight * 0.08f),
-            end = Offset(leftStemX, leftStemTopY),
-            strokeWidth = stemStroke,
-            cap = StrokeCap.Round
-        )
-        drawLine(
-            color = color,
-            start = Offset(rightStemX, rightHeadCenter.y - headHeight * 0.08f),
-            end = Offset(rightStemX, rightStemTopY),
-            strokeWidth = stemStroke,
-            cap = StrokeCap.Round
-        )
-
-        // Dải nối chính (Primary Curved Beam) uốn lượn mềm mại như dải lụa (tái sử dụng scratchPath)
-        val spanX = rightStemX - leftStemX
-        val curveArch = noteSize * 0.055f
-        scratchPath.reset()
-        scratchPath.moveTo(leftStemX - stemStroke * 0.4f, leftStemTopY)
-        scratchPath.cubicTo(
-            leftStemX + spanX * 0.33f, leftStemTopY - beamSlope * 0.33f - curveArch,
-            leftStemX + spanX * 0.66f, leftStemTopY - beamSlope * 0.66f + curveArch * 0.6f,
-            rightStemX + stemStroke * 0.4f, rightStemTopY
-        )
-        scratchPath.lineTo(rightStemX + stemStroke * 0.4f, rightStemTopY + beamThickness)
-        scratchPath.cubicTo(
-            leftStemX + spanX * 0.66f, leftStemTopY - beamSlope * 0.66f + beamThickness + curveArch * 0.6f,
-            leftStemX + spanX * 0.33f, leftStemTopY - beamSlope * 0.33f + beamThickness - curveArch,
-            leftStemX - stemStroke * 0.4f, leftStemTopY + beamThickness
-        )
-        scratchPath.close()
-        drawPath(path = scratchPath, color = color)
-
-        // Dải nối phụ (Secondary Harmonic Beam - tạo hình nốt móc kép ♬ thanh thoát)
-        val secondBeamOffset = beamThickness * 1.55f
-        val secondBeamStroke = (beamThickness * 0.52f).coerceAtLeast(1.2f)
-        scratchPath.reset()
-        scratchPath.moveTo(leftStemX, leftStemTopY + secondBeamOffset)
-        scratchPath.cubicTo(
-            leftStemX + spanX * 0.33f, leftStemTopY - beamSlope * 0.33f + secondBeamOffset - curveArch * 0.8f,
-            leftStemX + spanX * 0.66f, leftStemTopY - beamSlope * 0.66f + secondBeamOffset + curveArch * 0.5f,
-            rightStemX, rightStemTopY + secondBeamOffset
-        )
-        drawPath(
-            path = scratchPath,
-            color = color.copy(alpha = color.alpha * 0.72f),
-            style = Stroke(width = secondBeamStroke, cap = StrokeCap.Round)
-        )
-    }
-}
-
-/**
- * Vẽ hoa văn nốt nhạc móc đơn nghệ thuật (♪) với đuôi cờ lụa kép uốn cong mềm mại.
- */
-private fun DrawScope.drawSubmergedSingleEighthNote(
-    center: Offset,
-    noteSize: Float,
-    color: Color,
-    scratchPath: Path,
-    rotationDegrees: Float = 10f
-) {
-    rotate(degrees = rotationDegrees, pivot = center) {
-        val headWidth = noteSize * 0.34f
-        val headHeight = noteSize * 0.23f
-        val stemHeight = noteSize * 0.74f
-        val stemStroke = (noteSize * 0.072f).coerceAtLeast(1.2f)
-
-        val headCenter = Offset(
-            x = center.x - noteSize * 0.08f,
-            y = center.y + stemHeight * 0.32f
-        )
-
-        rotate(degrees = -24f, pivot = headCenter) {
-            drawOval(
-                color = color.copy(alpha = color.alpha * 0.34f),
-                topLeft = Offset(
-                    x = headCenter.x - headWidth * 0.64f,
-                    y = headCenter.y - headHeight * 0.64f
-                ),
-                size = Size(headWidth * 1.28f, headHeight * 1.28f)
-            )
-            drawOval(
-                color = color,
-                topLeft = Offset(
-                    x = headCenter.x - headWidth * 0.5f,
-                    y = headCenter.y - headHeight * 0.5f
-                ),
-                size = Size(headWidth, headHeight)
-            )
-        }
-
-        val stemX = headCenter.x + headWidth * 0.38f
-        val stemTopY = headCenter.y - stemHeight
-        drawLine(
-            color = color,
-            start = Offset(stemX, headCenter.y - headHeight * 0.08f),
-            end = Offset(stemX, stemTopY),
-            strokeWidth = stemStroke,
-            cap = StrokeCap.Round
-        )
-
-        // Đuôi cờ lụa chính uốn chữ S thanh thoát (tái sử dụng scratchPath, zero allocation)
-        scratchPath.reset()
-        scratchPath.moveTo(stemX, stemTopY)
-        scratchPath.cubicTo(
-            stemX + noteSize * 0.32f, stemTopY + noteSize * 0.08f,
-            stemX + noteSize * 0.38f, stemTopY + noteSize * 0.30f,
-            stemX + noteSize * 0.16f, stemTopY + noteSize * 0.48f
-        )
-        drawPath(
-            path = scratchPath,
-            color = color,
-            style = Stroke(width = stemStroke * 1.18f, cap = StrokeCap.Round)
-        )
-
-        // Đuôi cờ lụa phụ mảnh hơn tạo cảm giác chuyển động ngân vang
-        scratchPath.reset()
-        scratchPath.moveTo(stemX, stemTopY + noteSize * 0.14f)
-        scratchPath.cubicTo(
-            stemX + noteSize * 0.24f, stemTopY + noteSize * 0.22f,
-            stemX + noteSize * 0.26f, stemTopY + noteSize * 0.38f,
-            stemX + noteSize * 0.10f, stemTopY + noteSize * 0.52f
-        )
-        drawPath(
-            path = scratchPath,
-            color = color.copy(alpha = color.alpha * 0.58f),
-            style = Stroke(width = stemStroke * 0.78f, cap = StrokeCap.Round)
-        )
-
-        // Chấm âm thanh (Staccato dot) nghệ thuật cạnh đầu nốt
-        drawCircle(
-            color = color.copy(alpha = color.alpha * 0.65f),
-            radius = (noteSize * 0.045f).coerceAtLeast(1.2f),
-            center = Offset(
-                x = headCenter.x + headWidth * 0.82f,
-                y = headCenter.y - headHeight * 0.18f
-            )
-        )
-    }
-}
-
 

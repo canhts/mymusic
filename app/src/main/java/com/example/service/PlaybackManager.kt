@@ -20,7 +20,7 @@ import kotlinx.coroutines.flow.update
 
 class PlaybackManager private constructor(private val appContext: Context) {
 
-    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
     private val prefs: SharedPreferences = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
     private val _playbackState = MutableStateFlow(PlaybackState())
@@ -43,6 +43,9 @@ class PlaybackManager private constructor(private val appContext: Context) {
 
     @Volatile
     private var orderedSongsCache: List<Song> = emptyList()
+
+    @Volatile
+    private var orderedSongIdsCache: Set<Long> = emptySet()
 
     private val _orderedSongs = MutableStateFlow<List<Song>>(emptyList())
     val orderedSongs: StateFlow<List<Song>> = _orderedSongs.asStateFlow()
@@ -90,7 +93,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
     private fun registerAudioDeviceCallback() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             try {
-                audioManager.registerAudioDeviceCallback(object : android.media.AudioDeviceCallback() {
+                audioManager?.registerAudioDeviceCallback(object : android.media.AudioDeviceCallback() {
                     override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
                         updateHeadsetState()
                     }
@@ -161,6 +164,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
             } else {
                 orderedSongsCache = orderedSongsCache.mapNotNull { songsMap[it.id] }
             }
+            orderedSongIdsCache = orderedSongsCache.mapTo(HashSet(orderedSongsCache.size)) { it.id }
             _orderedSongs.value = orderedSongsCache
             if (shuffleQueue.size != orderedSongsCache.size) {
                 rebuildShuffleQueueLocked()
@@ -210,6 +214,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
             if (matched == null) {
                 activePlaylistId = null
                 orderedSongsCache = _songs.value
+                orderedSongIdsCache = orderedSongsCache.mapTo(HashSet(orderedSongsCache.size)) { it.id }
                 _orderedSongs.value = orderedSongsCache
                 rebuildShuffleQueueLocked(excludeSongId = currentSong?.id)
                 _playbackState.update { it.copy(activePlaylistId = null) }
@@ -230,6 +235,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
                     } else if (currentSong != null && updatedQueue.none { it.id == currentSong.id } && _playbackState.value.isPlaying) {
                         songToAutoPlay = updatedQueue.first()
                     }
+                    orderedSongIdsCache = orderedSongsCache.mapTo(HashSet(orderedSongsCache.size)) { it.id }
                     _orderedSongs.value = orderedSongsCache
                 }
             }
@@ -239,8 +245,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
             _playbackState.update { it.copy(isPlaying = false) }
             prefs.edit().putBoolean(KEY_IS_PLAYING, false).apply()
             sendServiceCommand(MusicPlaybackService.ACTION_PAUSE)
-        } else if (songToAutoPlay != null) {
-            playSongInternal(songToAutoPlay!!)
+        } else {
+            songToAutoPlay?.let { playSongInternal(it) }
         }
     }
 
@@ -267,6 +273,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
             val switchedQueue = activePlaylistId != null
             activePlaylistId = null
             orderedSongsCache = _songs.value
+            orderedSongIdsCache = orderedSongsCache.mapTo(HashSet(orderedSongsCache.size)) { it.id }
             _orderedSongs.value = orderedSongsCache
             if (switchedQueue || shuffleQueue.size != orderedSongsCache.size) {
                 rebuildShuffleQueueLocked(excludeSongId = song.id)
@@ -291,6 +298,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
             val switchedQueue = activePlaylistId != playlistId || !hasSameSongIds(orderedSongsCache, playlistSongs)
             activePlaylistId = playlistId
             orderedSongsCache = playlistSongs
+            orderedSongIdsCache = playlistSongs.mapTo(HashSet(playlistSongs.size)) { it.id }
             _orderedSongs.value = orderedSongsCache
             if (switchedQueue || shuffleQueue.size != orderedSongsCache.size) {
                 rebuildShuffleQueueLocked(excludeSongId = song.id)
@@ -379,6 +387,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
                 }
             }
             remainingQueue = orderedSongsCache
+            orderedSongIdsCache = remainingQueue.mapTo(HashSet(remainingQueue.size)) { it.id }
             _orderedSongs.value = remainingQueue
             rebuildShuffleQueueLocked(excludeSongId = current?.id)
         }
@@ -397,6 +406,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
             _songs.value = updatedList
             songsMap = updatedList.associateBy { it.id }
             orderedSongsCache = orderedSongsCache.map { if (it.id == songId) it.copy(title = newTitle) else it }
+            orderedSongIdsCache = orderedSongsCache.mapTo(HashSet(orderedSongsCache.size)) { it.id }
             _orderedSongs.value = orderedSongsCache
         }
         val current = _playbackState.value.currentSong
@@ -491,7 +501,7 @@ class PlaybackManager private constructor(private val appContext: Context) {
                     rebuildShuffleQueueLocked(excludeSongId = candidateId ?: currentId)
                 }
                 val resolved = candidateId?.let { id ->
-                    songsMap[id]?.takeIf { songsList.any { s -> s.id == id } }
+                    songsMap[id]?.takeIf { orderedSongIdsCache.contains(id) }
                         ?: songsList.firstOrNull { s -> s.id == id }
                 }
                 if (resolved != null && resolved.id != currentId) {
@@ -617,18 +627,19 @@ class PlaybackManager private constructor(private val appContext: Context) {
     }
 
     fun isHeadsetPluggedIn(): Boolean {
+        val am = audioManager ?: return false
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                val devices = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+                val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
                 if (devices != null && devices.any { isHeadsetDevice(it) }) {
                     return true
                 }
             }
             @Suppress("DEPRECATION")
-            if (audioManager.isWiredHeadsetOn) return true
+            if (am.isWiredHeadsetOn) return true
             @Suppress("DEPRECATION")
             try {
-                if (audioManager.isBluetoothA2dpOn || audioManager.isBluetoothScoOn) return true
+                if (am.isBluetoothA2dpOn || am.isBluetoothScoOn) return true
             } catch (_: Throwable) {
                 // BLUETOOTH_CONNECT permission not granted
             }

@@ -19,6 +19,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -53,7 +54,10 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -66,14 +70,22 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onPlaced
+import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.PlayMode
 import com.example.model.PlaybackState
+import kotlin.math.abs
+import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -324,45 +336,183 @@ internal fun CapsuleBottomToolbar(
                         )
                         .testTag("nav_pill_menu")
                 ) {
-                    Row(
+                    val tabBounds = remember { mutableStateMapOf<MainTab, NavTabBounds>() }
+                    val indicatorLeftAnim = remember { Animatable(0f) }
+                    val indicatorWidthAnim = remember { Animatable(0f) }
+                    var hasInitializedIndicator by remember { mutableStateOf(false) }
+
+                    val activeTabBounds = tabBounds[currentTab]
+                    LaunchedEffect(currentTab, activeTabBounds?.leftPx, activeTabBounds?.widthPx) {
+                        val target = activeTabBounds ?: return@LaunchedEffect
+                        if (!hasInitializedIndicator) {
+                            indicatorLeftAnim.snapTo(target.leftPx)
+                            indicatorWidthAnim.snapTo(target.widthPx)
+                            hasInitializedIndicator = true
+                        } else {
+                            launch {
+                                indicatorLeftAnim.animateTo(
+                                    targetValue = target.leftPx,
+                                    initialVelocity = indicatorLeftAnim.velocity,
+                                    animationSpec = spring(
+                                        dampingRatio = 0.52f,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                            }
+                            launch {
+                                indicatorWidthAnim.animateTo(
+                                    targetValue = target.widthPx,
+                                    initialVelocity = indicatorWidthAnim.velocity,
+                                    animationSpec = spring(
+                                        dampingRatio = 0.58f,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                )
+                            }
+                        }
+                    }
+
+                    val updateTabBounds: (MainTab, Float, Float) -> Unit = remember {
+                        { tab, leftPx, widthPx ->
+                            val prev = tabBounds[tab]
+                            if (prev == null ||
+                                abs(prev.leftPx - leftPx) > 0.25f ||
+                                abs(prev.widthPx - widthPx) > 0.25f
+                            ) {
+                                tabBounds[tab] = NavTabBounds(leftPx = leftPx, widthPx = widthPx)
+                            }
+                        }
+                    }
+
+                    Box(
                         modifier = Modifier
                             .fillMaxHeight()
-                            .animateContentSize(
-                                animationSpec = spring(
-                                    dampingRatio = 0.62f,
-                                    stiffness = Spring.StiffnessMediumLow
-                                )
-                            )
-                            .padding(4.dp),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(4.dp)
                     ) {
-                        NavPillTabItem(
-                            label = stringResource(R.string.nav_tab_songs),
-                            icon = Icons.Default.MusicNote,
-                            selected = currentTab == MainTab.SONGS,
-                            onClick = { onSelectTab(MainTab.SONGS) },
-                            testTag = "nav_tab_songs",
-                            iconTestTag = "nav_tab_icon_songs"
-                        )
+                        // Lớp nền viên nhộng màu đậm trượt qua lại giữa các trang với độ nảy đàn hồi
+                        Box(
+                            modifier = Modifier.matchParentSize()
+                        ) {
+                            val activePillColor = MaterialTheme.colorScheme.primary
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxHeight()
+                                    .layout { measurable, constraints ->
+                                        val containerW = constraints.maxWidth.toFloat().coerceAtLeast(1f)
+                                        val rawLeft = if (hasInitializedIndicator) {
+                                            indicatorLeftAnim.value
+                                        } else {
+                                            activeTabBounds?.leftPx ?: 0f
+                                        }
+                                        val rawWidth = if (hasInitializedIndicator) {
+                                            indicatorWidthAnim.value
+                                        } else {
+                                            activeTabBounds?.widthPx ?: 0f
+                                        }
+                                        if (rawWidth < 1f) {
+                                            val empty = measurable.measure(Constraints.fixed(0, 0))
+                                            layout(0, 0) { empty.place(0, 0) }
+                                        } else {
+                                            val clampedBaseWidth = rawWidth.coerceAtMost(containerW)
+                                            val leftOvershoot = (-rawLeft).coerceAtLeast(0f)
+                                            val rightOvershoot = (rawLeft + clampedBaseWidth - containerW).coerceAtLeast(0f)
+                                            val wallBleedPx = 1.5.dp.toPx()
 
-                        NavPillTabItem(
-                            label = stringResource(R.string.nav_tab_playlists),
-                            icon = Icons.AutoMirrored.Filled.QueueMusic,
-                            selected = currentTab == MainTab.PLAYLISTS,
-                            onClick = { onSelectTab(MainTab.PLAYLISTS) },
-                            testTag = "nav_tab_playlists",
-                            iconTestTag = "nav_tab_icon_playlists"
-                        )
+                                            val visualWidth: Float
+                                            val visualLeft: Float
+                                            when {
+                                                leftOvershoot > 0f -> {
+                                                    visualWidth = (clampedBaseWidth - leftOvershoot * 0.35f)
+                                                        .coerceAtLeast(clampedBaseWidth * 0.84f)
+                                                    visualLeft = (-leftOvershoot * 0.18f).coerceAtLeast(-wallBleedPx)
+                                                }
+                                                rightOvershoot > 0f -> {
+                                                    visualWidth = (clampedBaseWidth - rightOvershoot * 0.35f)
+                                                        .coerceAtLeast(clampedBaseWidth * 0.84f)
+                                                    val maxRight = containerW + (rightOvershoot * 0.18f).coerceAtMost(wallBleedPx)
+                                                    visualLeft = (maxRight - visualWidth).coerceAtLeast(0f)
+                                                }
+                                                else -> {
+                                                    visualWidth = clampedBaseWidth
+                                                    visualLeft = rawLeft.coerceIn(0f, (containerW - visualWidth).coerceAtLeast(0f))
+                                                }
+                                            }
 
-                        NavPillTabItem(
-                            label = stringResource(R.string.nav_tab_sing),
-                            icon = Icons.Rounded.Mic,
-                            selected = currentTab == MainTab.SING,
-                            onClick = { onSelectTab(MainTab.SING) },
-                            testTag = "nav_tab_sing",
-                            iconTestTag = "nav_tab_icon_sing"
-                        )
+                                            val widthPx = visualWidth.roundToInt().coerceAtLeast(1)
+                                            val placeable = measurable.measure(
+                                                Constraints.fixed(
+                                                    width = widthPx,
+                                                    height = constraints.maxHeight.coerceAtLeast(1)
+                                                )
+                                            )
+                                            layout(constraints.maxWidth, constraints.maxHeight) {
+                                                placeable.place(x = visualLeft.roundToInt(), y = 0)
+                                            }
+                                        }
+                                    }
+                                    .graphicsLayer {
+                                        val speed = if (hasInitializedIndicator) abs(indicatorLeftAnim.velocity) else 0f
+                                        val travelStretch = (speed / 5500f).coerceIn(0f, 0.08f)
+                                        scaleX = 1f + travelStretch
+                                        scaleY = 1f - travelStretch * 0.40f
+                                    }
+                                    .background(
+                                        color = activePillColor,
+                                        shape = CircleShape
+                                    )
+                                    .semantics { stateDescription = currentTab.name }
+                                    .testTag("nav_pill_active_indicator")
+                            )
+                        }
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxHeight()
+                                .animateContentSize(
+                                    animationSpec = spring(
+                                        dampingRatio = 0.62f,
+                                        stiffness = Spring.StiffnessMediumLow
+                                    )
+                                ),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            NavPillTabItem(
+                                label = stringResource(R.string.nav_tab_songs),
+                                icon = Icons.Default.MusicNote,
+                                selected = currentTab == MainTab.SONGS,
+                                onBoundsChanged = { leftPx, widthPx ->
+                                    updateTabBounds(MainTab.SONGS, leftPx, widthPx)
+                                },
+                                onClick = { onSelectTab(MainTab.SONGS) },
+                                testTag = "nav_tab_songs",
+                                iconTestTag = "nav_tab_icon_songs"
+                            )
+
+                            NavPillTabItem(
+                                label = stringResource(R.string.nav_tab_playlists),
+                                icon = Icons.AutoMirrored.Filled.QueueMusic,
+                                selected = currentTab == MainTab.PLAYLISTS,
+                                onBoundsChanged = { leftPx, widthPx ->
+                                    updateTabBounds(MainTab.PLAYLISTS, leftPx, widthPx)
+                                },
+                                onClick = { onSelectTab(MainTab.PLAYLISTS) },
+                                testTag = "nav_tab_playlists",
+                                iconTestTag = "nav_tab_icon_playlists"
+                            )
+
+                            NavPillTabItem(
+                                label = stringResource(R.string.nav_tab_sing),
+                                icon = Icons.Rounded.Mic,
+                                selected = currentTab == MainTab.SING,
+                                onBoundsChanged = { leftPx, widthPx ->
+                                    updateTabBounds(MainTab.SING, leftPx, widthPx)
+                                },
+                                onClick = { onSelectTab(MainTab.SING) },
+                                testTag = "nav_tab_sing",
+                                iconTestTag = "nav_tab_icon_sing"
+                            )
+                        }
                     }
                 }
 
@@ -429,38 +579,29 @@ internal fun CapsuleBottomToolbar(
     }
 }
 
+private data class NavTabBounds(
+    val leftPx: Float,
+    val widthPx: Float
+)
+
 @Composable
 private fun NavPillTabItem(
     label: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     selected: Boolean,
+    onBoundsChanged: (leftPx: Float, widthPx: Float) -> Unit,
     onClick: () -> Unit,
     testTag: String,
     iconTestTag: String
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val bgColor by animateColorAsState(
-        targetValue = if (selected) {
-            MaterialTheme.colorScheme.primary
-        } else {
-            Color.Transparent
-        },
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "nav_tab_bg_$testTag"
-    )
     val contentColor by animateColorAsState(
         targetValue = if (selected) {
             MaterialTheme.colorScheme.onPrimary
         } else {
             MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f)
         },
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioNoBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
+        animationSpec = tween(durationMillis = 180),
         label = "nav_tab_fg_$testTag"
     )
 
@@ -491,14 +632,13 @@ private fun NavPillTabItem(
         }
     }
 
-    Surface(
-        shape = CircleShape,
-        color = bgColor,
-        contentColor = contentColor,
-        tonalElevation = 0.dp,
-        shadowElevation = 0.dp,
+    Box(
+        contentAlignment = Alignment.Center,
         modifier = Modifier
             .fillMaxHeight()
+            .onPlaced { coords ->
+                onBoundsChanged(coords.positionInParent().x, coords.size.width.toFloat())
+            }
             .springPress(scaleDown = 0.90f, interactionSource = interactionSource)
             .clip(CircleShape)
             .clickable(
@@ -510,6 +650,7 @@ private fun NavPillTabItem(
     ) {
         Row(
             modifier = Modifier
+                .fillMaxHeight()
                 .animateContentSize(
                     animationSpec = spring(
                         dampingRatio = 0.62f,

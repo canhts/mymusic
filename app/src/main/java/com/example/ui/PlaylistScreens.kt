@@ -27,6 +27,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -74,7 +75,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -99,10 +100,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
@@ -110,6 +113,7 @@ import com.example.R
 import com.example.model.PlaybackState
 import com.example.model.Playlist
 import com.example.model.Song
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 internal fun matchesPlaylistSearchQuery(
@@ -583,6 +587,8 @@ private fun PlaylistSquareCard(
     }
     val totalDurationDesc = stringResource(R.string.playlist_total_duration_desc, totalDurationText)
     val hasSongs = playlist.songs.isNotEmpty()
+    val resolvedIcon = remember(playlist.iconId) { PlaylistIconCatalog.resolveOrDefault(playlist.iconId) }
+    val watermarkPainter = androidx.compose.ui.graphics.vector.rememberVectorPainter(image = resolvedIcon.vector)
 
     Surface(
         shape = cardShape,
@@ -606,37 +612,62 @@ private fun PlaylistSquareCard(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .drawBehind {
+                .drawWithCache {
                     val accent = if (isActiveQueue) primaryColor else tertiaryColor
-                    drawCircle(
-                        brush = Brush.radialGradient(
-                            colors = listOf(
-                                accent.copy(alpha = if (isActiveQueue) 0.18f else 0.10f),
-                                Color.Transparent
-                            ),
-                            center = Offset(size.width * 0.16f, size.height * 0.16f),
-                            radius = size.width * 0.72f
+                    val glowCenter = Offset(size.width * 0.16f, size.height * 0.16f)
+                    val glowRadius = (size.width * 0.72f).coerceAtLeast(1f)
+                    val glowBrush = Brush.radialGradient(
+                        colors = listOf(
+                            accent.copy(alpha = if (isActiveQueue) 0.18f else 0.10f),
+                            Color.Transparent
                         ),
-                        radius = size.width * 0.72f,
-                        center = Offset(size.width * 0.16f, size.height * 0.16f)
+                        center = glowCenter,
+                        radius = glowRadius
                     )
-                    drawCircle(
-                        color = accent.copy(alpha = if (isActiveQueue) 0.08f else 0.04f),
-                        radius = size.width * 0.34f,
-                        center = Offset(size.width * 0.92f, size.height * 0.90f)
-                    )
+                    val watermarkTint = if (isActiveQueue) {
+                        primaryColor
+                    } else {
+                        lerp(titleColor, primaryColor, 0.42f)
+                    }
+                    val watermarkCenter = Offset(size.width * 0.68f, size.height * 0.58f)
+                    val watermarkSize = size.width * 0.94f
+                    val watermarkAlpha = if (isActiveQueue) 0.095f else 0.072f
+
+                    onDrawBehind {
+                        drawCircle(
+                            brush = glowBrush,
+                            radius = glowRadius,
+                            center = glowCenter
+                        )
+                        drawSoftPlaylistWatermark(
+                            painter = watermarkPainter,
+                            center = watermarkCenter,
+                            iconSizePx = watermarkSize,
+                            tint = watermarkTint,
+                            alpha = watermarkAlpha,
+                            rotationDegrees = -14f
+                        )
+                    }
                 }
         ) {
-            // Góc trên trái: Icon danh sách phát / sóng nhạc & nhãn đang phát
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .semantics { stateDescription = resolvedIcon.id }
+                    .testTag("playlist_card_watermark_${playlist.id}")
+            )
+
+            // Góc trên trái: Icon danh sách phát / sóng nhạc đặt trong nền tròn kích thước bằng nút xóa (30dp) & nhãn đang phát
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
                 modifier = Modifier
                     .align(Alignment.TopStart)
-                    .padding(start = 12.dp, top = 12.dp, end = 52.dp)
+                    .padding(start = 13.dp, top = 13.dp, end = 52.dp)
+                    .height(30.dp)
             ) {
                 Surface(
-                    shape = RoundedCornerShape(11.dp),
+                    shape = CircleShape,
                     color = if (isActiveQueue) {
                         primaryColor.copy(alpha = 0.22f)
                     } else {
@@ -648,7 +679,7 @@ private fun PlaylistSquareCard(
                         titleColor
                     },
                     modifier = Modifier
-                        .size(34.dp)
+                        .size(30.dp)
                         .testTag("playlist_card_icon_${playlist.id}")
                 ) {
                     Box(
@@ -659,13 +690,13 @@ private fun PlaylistSquareCard(
                             AudioWaveformEqualizer(
                                 isPlaying = isPlaying,
                                 tint = primaryColor,
-                                modifier = Modifier.size(width = 18.dp, height = 14.dp)
+                                modifier = Modifier.size(width = 16.dp, height = 13.dp)
                             )
                         } else {
                             Icon(
-                                imageVector = Icons.AutoMirrored.Filled.QueueMusic,
+                                imageVector = resolvedIcon.vector,
                                 contentDescription = null,
-                                modifier = Modifier.size(18.dp)
+                                modifier = Modifier.size(16.dp)
                             )
                         }
                     }
@@ -698,7 +729,7 @@ private fun PlaylistSquareCard(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = 4.dp, end = 4.dp)
-                    .minimumInteractiveComponentSize()
+                    .size(48.dp)
                     .springPress(scaleDown = 0.88f, interactionSource = deleteSource)
                     .clip(CircleShape)
                     .clickable(
@@ -712,7 +743,9 @@ private fun PlaylistSquareCard(
                     shape = CircleShape,
                     color = titleColor.copy(alpha = 0.10f),
                     contentColor = metaColor,
-                    modifier = Modifier.size(30.dp)
+                    modifier = Modifier
+                        .size(30.dp)
+                        .testTag("playlist_delete_circle_${playlist.id}")
                 ) {
                     Box(
                         contentAlignment = Alignment.Center,
@@ -842,8 +875,10 @@ internal fun PlaylistDetailScreen(
     onPlayAll: () -> Unit,
     onAddSongs: () -> Unit,
     onRenamePlaylist: (String) -> Unit = {},
+    onUpdatePlaylistIcon: (String?) -> Unit = {},
     onSongClick: (Song) -> Unit,
     onRemoveSongFromPlaylist: (Song) -> Unit,
+    onOpenPlayer: (() -> Unit)? = null,
     contentTopPadding: Dp,
     contentBottomPadding: Dp,
     isDarkTheme: Boolean,
@@ -855,10 +890,13 @@ internal fun PlaylistDetailScreen(
 
     var revealedSongId by remember { mutableStateOf<Long?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
+    var showIconPicker by remember { mutableStateOf(false) }
     var isSearchExpanded by remember(playlist.id) { mutableStateOf(false) }
     var searchQuery by remember(playlist.id) { mutableStateOf("") }
     var screenRootCoords by remember { mutableStateOf<LayoutCoordinates?>(null) }
     var searchCapsuleBoundsInRoot by remember { mutableStateOf(Rect.Zero) }
+    val resolvedPlaylistIcon = remember(playlist.iconId) { PlaylistIconCatalog.resolveOrDefault(playlist.iconId) }
+    val hasCustomNonDefaultIcon = playlist.iconId != null && resolvedPlaylistIcon.id != PlaylistIconCatalog.DEFAULT_ICON_ID
 
     val currentRevealedId by rememberUpdatedState(revealedSongId)
     val currentIsSearchExpanded by rememberUpdatedState(isSearchExpanded)
@@ -976,44 +1014,66 @@ internal fun PlaylistDetailScreen(
                         .fillMaxWidth()
                         .padding(bottom = 10.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
+                    val actionBtnSize = 48.dp
+                    val actionBtnGap = 8.dp
+                    val expandProgress by animateFloatAsState(
+                        targetValue = if (isSearchExpanded) 1f else 0f,
+                        animationSpec = spring(
+                            dampingRatio = 0.58f,
+                            stiffness = Spring.StiffnessMediumLow
+                        ),
+                        label = "playlist_detail_search_expand"
+                    )
+                    val clampedExpand = expandProgress.coerceAtLeast(0f)
+                    val headerContentAlpha = (1f - clampedExpand * 1.65f).coerceIn(0f, 1f)
+                    val bounceScale = 1f + if (expandProgress < 0f) {
+                        expandProgress * 0.40f
+                    } else {
+                        (expandProgress - 1f).coerceAtLeast(0f) * 0.18f
+                    }
+
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = actionBtnSize),
+                        contentAlignment = Alignment.CenterStart
                     ) {
-                        IconButton(
-                            onClick = onBack,
-                            modifier = Modifier.testTag("btn_back_playlists")
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = stringResource(R.string.action_close),
-                                tint = MaterialTheme.colorScheme.onSurface
-                            )
-                        }
+                        val totalHeaderWidth = maxWidth.coerceAtLeast(actionBtnSize)
+                        val rightClusterWidth = actionBtnSize + actionBtnGap + actionBtnSize + actionBtnGap
+                        val collapsedSearchLeft = (totalHeaderWidth - rightClusterWidth - actionBtnSize).coerceAtLeast(0.dp)
+                        val searchLeftDp = (collapsedSearchLeft * (1f - clampedExpand)).coerceIn(0.dp, collapsedSearchLeft)
+                        val searchWidthDp = (actionBtnSize + (totalHeaderWidth - actionBtnSize) * clampedExpand)
+                            .coerceIn(actionBtnSize, totalHeaderWidth)
 
-                        val renameActionDesc = stringResource(R.string.cd_rename_playlist)
-                        val titleAlpha by animateFloatAsState(
-                            targetValue = if (isSearchExpanded) 0f else 1f,
-                            animationSpec = tween(durationMillis = if (isSearchExpanded) 110 else 180),
-                            label = "playlist_detail_title_alpha"
-                        )
-
-                        BoxWithConstraints(
+                        Row(
                             modifier = Modifier
-                                .weight(1f)
-                                .heightIn(min = 48.dp),
-                            contentAlignment = Alignment.CenterStart
+                                .fillMaxWidth()
+                                .heightIn(min = actionBtnSize)
+                                .graphicsLayer { alpha = headerContentAlpha },
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            val maxSearchCapsuleWidth = maxWidth.coerceAtLeast(48.dp)
+                            IconButton(
+                                onClick = onBack,
+                                enabled = !isSearchExpanded,
+                                modifier = Modifier
+                                    .size(actionBtnSize)
+                                    .testTag("btn_back_playlists")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = stringResource(R.string.action_close),
+                                    tint = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
 
+                            val renameActionDesc = stringResource(R.string.cd_rename_playlist)
+                            val titleShape = remember { RoundedCornerShape(12.dp) }
                             Column(
                                 verticalArrangement = Arrangement.Center,
                                 modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(end = if (hasSongs) 52.dp else 0.dp)
-                                    .heightIn(min = 48.dp)
-                                    .graphicsLayer { alpha = titleAlpha }
-                                    .clip(RoundedCornerShape(12.dp))
+                                    .weight(1f)
+                                    .heightIn(min = actionBtnSize)
+                                    .clip(titleShape)
                                     .semantics { contentDescription = renameActionDesc }
                                     .clickable(enabled = !isSearchExpanded) { showRenameDialog = true }
                                     .padding(horizontal = 6.dp, vertical = 4.dp)
@@ -1034,146 +1094,176 @@ internal fun PlaylistDetailScreen(
                             }
 
                             if (hasSongs) {
-                                val targetSearchWidth = if (isSearchExpanded) maxSearchCapsuleWidth else 48.dp
-                                val animatedSearchWidth by animateDpAsState(
-                                    targetValue = targetSearchWidth,
-                                    animationSpec = spring(
-                                        dampingRatio = 0.72f,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    ),
-                                    label = "playlist_detail_search_width"
-                                )
-                                val searchContainerColor by animateColorAsState(
-                                    targetValue = if (isSearchExpanded) {
-                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                Spacer(modifier = Modifier.width(actionBtnSize + actionBtnGap))
+                            }
+
+                            val chooseIconSource = remember { MutableInteractionSource() }
+                            FilledTonalIconButton(
+                                onClick = { if (!isSearchExpanded) showIconPicker = true },
+                                enabled = !isSearchExpanded,
+                                shape = CircleShape,
+                                interactionSource = chooseIconSource,
+                                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                    containerColor = if (hasCustomNonDefaultIcon) {
+                                        MaterialTheme.colorScheme.primaryContainer
                                     } else {
                                         MaterialTheme.colorScheme.secondaryContainer
                                     },
-                                    animationSpec = tween(durationMillis = 160),
-                                    label = "playlist_detail_search_color"
+                                    contentColor = if (hasCustomNonDefaultIcon) {
+                                        MaterialTheme.colorScheme.onPrimaryContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.onSecondaryContainer
+                                    }
+                                ),
+                                modifier = Modifier
+                                    .size(actionBtnSize)
+                                    .springPress(scaleDown = 0.90f, interactionSource = chooseIconSource)
+                                    .testTag("btn_choose_playlist_icon")
+                            ) {
+                                Icon(
+                                    imageVector = resolvedPlaylistIcon.vector,
+                                    contentDescription = stringResource(R.string.cd_choose_playlist_icon),
+                                    modifier = Modifier.size(22.dp)
                                 )
+                            }
 
-                                Surface(
-                                    shape = CircleShape,
-                                    color = searchContainerColor,
-                                    tonalElevation = if (isSearchExpanded) 2.dp else 0.dp,
-                                    shadowElevation = 0.dp,
-                                    modifier = Modifier
-                                        .align(Alignment.CenterEnd)
-                                        .zIndex(2f)
-                                        .width(animatedSearchWidth.coerceAtLeast(48.dp))
-                                        .height(48.dp)
-                                        .onGloballyPositioned { coords ->
-                                            if (coords.isAttached) {
-                                                searchCapsuleBoundsInRoot = coords.boundsInRoot()
-                                            }
+                            Spacer(modifier = Modifier.width(actionBtnGap))
+
+                            val addSongsSource = remember { MutableInteractionSource() }
+                            FilledTonalIconButton(
+                                onClick = { if (!isSearchExpanded) onAddSongs() },
+                                enabled = !isSearchExpanded,
+                                shape = CircleShape,
+                                interactionSource = addSongsSource,
+                                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                                ),
+                                modifier = Modifier
+                                    .size(actionBtnSize)
+                                    .springPress(scaleDown = 0.90f, interactionSource = addSongsSource)
+                                    .testTag("btn_add_songs_to_playlist")
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Add,
+                                    contentDescription = stringResource(R.string.playlist_add_songs_action),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                        }
+
+                        if (hasSongs) {
+                            val searchContainerColor by animateColorAsState(
+                                targetValue = if (isSearchExpanded) {
+                                    MaterialTheme.colorScheme.surfaceContainerHigh
+                                } else {
+                                    MaterialTheme.colorScheme.secondaryContainer
+                                },
+                                animationSpec = tween(durationMillis = 160),
+                                label = "playlist_detail_search_color"
+                            )
+
+                            Surface(
+                                shape = CircleShape,
+                                color = searchContainerColor,
+                                tonalElevation = if (isSearchExpanded) 2.dp else 0.dp,
+                                shadowElevation = 0.dp,
+                                modifier = Modifier
+                                    .zIndex(3f)
+                                    .width(searchWidthDp)
+                                    .height(actionBtnSize)
+                                    .graphicsLayer {
+                                        translationX = searchLeftDp.toPx()
+                                        scaleX = bounceScale
+                                        scaleY = bounceScale
+                                    }
+                                    .onGloballyPositioned { coords ->
+                                        if (coords.isAttached) {
+                                            searchCapsuleBoundsInRoot = coords.boundsInRoot()
                                         }
-                                        .clip(CircleShape)
-                                        .then(
-                                            if (!isSearchExpanded) {
-                                                Modifier.clickable { isSearchExpanded = true }
-                                            } else {
-                                                Modifier
-                                            }
+                                    }
+                                    .clip(CircleShape)
+                                    .then(
+                                        if (!isSearchExpanded) {
+                                            Modifier.clickable { isSearchExpanded = true }
+                                        } else {
+                                            Modifier
+                                        }
+                                    )
+                                    .testTag("btn_search_playlist_detail")
+                            ) {
+                                if (!isSearchExpanded && searchWidthDp <= 60.dp) {
+                                    Box(
+                                        contentAlignment = Alignment.Center,
+                                        modifier = Modifier.fillMaxSize()
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Search,
+                                            contentDescription = stringResource(R.string.cd_search_in_playlist),
+                                            tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                            modifier = Modifier.size(22.dp)
                                         )
-                                        .testTag("btn_search_playlist_detail")
-                                ) {
-                                    if (!isSearchExpanded && animatedSearchWidth <= 56.dp) {
+                                    }
+                                } else {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .padding(start = 16.dp, end = 8.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.Search,
+                                            contentDescription = stringResource(R.string.cd_search_in_playlist),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Box(
+                                            contentAlignment = Alignment.CenterStart,
+                                            modifier = Modifier.weight(1f)
+                                        ) {
+                                            if (searchQuery.isEmpty()) {
+                                                Text(
+                                                    text = stringResource(R.string.search_placeholder),
+                                                    style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
+                                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis
+                                                )
+                                            }
+                                            BasicTextField(
+                                                value = searchQuery,
+                                                onValueChange = { searchQuery = it },
+                                                singleLine = true,
+                                                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                                                    fontSize = 14.sp,
+                                                    color = MaterialTheme.colorScheme.onSurface
+                                                ),
+                                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .focusRequester(searchFocusRequester)
+                                                    .testTag("input_search_playlist_detail")
+                                            )
+                                        }
                                         Box(
                                             contentAlignment = Alignment.Center,
-                                            modifier = Modifier.fillMaxSize()
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Rounded.Search,
-                                                contentDescription = stringResource(R.string.cd_search_in_playlist),
-                                                tint = MaterialTheme.colorScheme.onSecondaryContainer,
-                                                modifier = Modifier.size(22.dp)
-                                            )
-                                        }
-                                    } else {
-                                        Row(
                                             modifier = Modifier
-                                                .fillMaxSize()
-                                                .padding(start = 14.dp, end = 8.dp),
-                                            verticalAlignment = Alignment.CenterVertically
+                                                .size(34.dp)
+                                                .clip(CircleShape)
+                                                .clickable { collapseSearch() }
+                                                .testTag("btn_close_search_playlist_detail")
                                         ) {
                                             Icon(
-                                                imageVector = Icons.Rounded.Search,
-                                                contentDescription = stringResource(R.string.cd_search_in_playlist),
+                                                imageVector = Icons.Rounded.Close,
+                                                contentDescription = stringResource(R.string.clear_search),
                                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                modifier = Modifier.size(20.dp)
+                                                modifier = Modifier.size(18.dp)
                                             )
-                                            Spacer(modifier = Modifier.width(8.dp))
-                                            Box(
-                                                contentAlignment = Alignment.CenterStart,
-                                                modifier = Modifier.weight(1f)
-                                            ) {
-                                                if (searchQuery.isEmpty()) {
-                                                    Text(
-                                                        text = stringResource(R.string.search_placeholder),
-                                                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f),
-                                                        maxLines = 1,
-                                                        overflow = TextOverflow.Ellipsis
-                                                    )
-                                                }
-                                                BasicTextField(
-                                                    value = searchQuery,
-                                                    onValueChange = { searchQuery = it },
-                                                    singleLine = true,
-                                                    textStyle = MaterialTheme.typography.bodyMedium.copy(
-                                                        fontSize = 14.sp,
-                                                        color = MaterialTheme.colorScheme.onSurface
-                                                    ),
-                                                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                                                    modifier = Modifier
-                                                        .fillMaxWidth()
-                                                        .focusRequester(searchFocusRequester)
-                                                        .testTag("input_search_playlist_detail")
-                                                )
-                                            }
-                                            Box(
-                                                contentAlignment = Alignment.Center,
-                                                modifier = Modifier
-                                                    .size(32.dp)
-                                                    .clip(CircleShape)
-                                                    .clickable { collapseSearch() }
-                                                    .testTag("btn_close_search_playlist_detail")
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Rounded.Close,
-                                                    contentDescription = stringResource(R.string.clear_search),
-                                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                                    modifier = Modifier.size(18.dp)
-                                                )
-                                            }
                                         }
                                     }
                                 }
                             }
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        val addSongsSource = remember { MutableInteractionSource() }
-                        FilledTonalIconButton(
-                            onClick = onAddSongs,
-                            shape = CircleShape,
-                            interactionSource = addSongsSource,
-                            colors = IconButtonDefaults.filledTonalIconButtonColors(
-                                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                                contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                            ),
-                            modifier = Modifier
-                                .size(48.dp)
-                                .springPress(scaleDown = 0.90f, interactionSource = addSongsSource)
-                                .testTag("btn_add_songs_to_playlist")
-                        ) {
-                            Icon(
-                                imageVector = Icons.Default.Add,
-                                contentDescription = stringResource(R.string.playlist_add_songs_action),
-                                modifier = Modifier.size(22.dp)
-                            )
                         }
                     }
 
@@ -1293,6 +1383,7 @@ internal fun PlaylistDetailScreen(
                         onCloseActions = onCardCloseActions,
                         onClick = onCardClick,
                         onRemoveFromPlaylist = onCardRemove,
+                        onOpenPlayer = onOpenPlayer,
                         isDarkTheme = isDarkTheme,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -1312,6 +1403,16 @@ internal fun PlaylistDetailScreen(
                 onRenamePlaylist(newName)
             },
             onDismiss = { showRenameDialog = false }
+        )
+    }
+
+    if (showIconPicker) {
+        PlaylistCustomIconPickerDialog(
+            selectedIconId = resolvedPlaylistIcon.id,
+            onSelectIcon = { iconId ->
+                onUpdatePlaylistIcon(iconId)
+            },
+            onDismiss = { showIconPicker = false }
         )
     }
 }
