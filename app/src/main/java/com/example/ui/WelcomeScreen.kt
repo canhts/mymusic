@@ -137,7 +137,7 @@ private val WELCOME_FRONT_RIM_BRUSH = Brush.radialGradient(
 /**
  * Trang khởi động khi mới cài đặt ứng dụng (Onboarding / Start Screen):
  * - Nền chuyển sắc tím hoàng gia sống động hòa quyện cùng hai khối cầu màu 3D mượt mà ở nửa trên.
- * - Nội dung giới thiệu trực tiếp bằng ngôn ngữ của ứng dụng (Thư viện MP3, Danh sách phát, Hòa ca, Nhịp nhạc).
+ * - Nội dung giới thiệu trực tiếp bằng ngôn ngữ của ứng dụng (Thư viện MP3, Danh sách phát, Nhịp nhạc).
  * - Thanh hành động dưới đáy gồm nhãn "Bắt đầu" bên trái và nút tròn san hô kèm quầng hào quang bên phải.
  */
 @Composable

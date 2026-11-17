@@ -22,6 +22,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertIsNotDisplayed
@@ -41,38 +42,32 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTextReplacement
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.swipe
+import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.unit.dp
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
-import com.example.data.Id3v2LyricsExtractor
-import com.example.data.LrcLibRemoteClient
-import com.example.data.LyricsRepository
-import com.example.data.OfflineSpeechLyricsEngine
 import com.example.data.PlaylistRepository
-import com.example.data.RemoteLyricsResponse
 import com.example.data.analyzePcmSamplesToProfile
 import com.example.data.local.AppDatabase
-import com.example.model.LyricLine
-import com.example.model.LyricsSource
-import com.example.model.LyricsUiState
-import com.example.model.OfflineModelState
 import com.example.model.PlayMode
 import com.example.model.PlaybackState
 import com.example.model.Playlist
 import com.example.model.Song
-import com.example.model.calculateLineProgress
 import com.example.service.PlaybackManager
 import com.example.ui.AddSongsToPlaylistBottomSheet
 import com.example.ui.AddToPlaylistBottomSheet
+import com.example.ui.AppPreloadScreen
 import com.example.ui.AudioEffectsBottomSheet
 import com.example.ui.BottomNowPlayingPill
 import com.example.ui.CapsuleBottomToolbar
 import com.example.ui.CarouselPlaylistBottomSheet
 import com.example.ui.CreatePlaylistDialog
 import com.example.ui.CurrentQueueBottomSheet
-import com.example.ui.HoaCaScreen
+import com.example.ui.EdgeToEdgeGradientScrims
 import com.example.ui.INACTIVITY_AUTO_COLLAPSE_TIMEOUT_MS
+import com.example.ui.KeepAliveMainTabHost
+import com.example.ui.MainScreen
 import com.example.ui.MainTab
 import com.example.ui.MainViewModel
 import com.example.ui.NowPlayingScreen
@@ -1738,7 +1733,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `bottom menu displays Hoa ca tab button with icon when selected and opens Hoa ca page`() {
+    fun `bottom menu displays only two tabs Songs and Playlists`() {
         val posFlow = MutableStateFlow(0L)
         var currentTab by mutableStateOf(MainTab.SONGS)
 
@@ -1760,14 +1755,15 @@ class ExampleRobolectricTest {
         }
 
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("nav_tab_sing").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Hòa ca").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("nav_tab_songs").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("nav_tab_playlists").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("nav_tab_sing").assertDoesNotExist()
+        composeTestRule.onNodeWithText("Hòa ca").assertDoesNotExist()
 
-        // Click "Hòa ca" tab -> selects MainTab.SING and displays accompanying icon
-        composeTestRule.onNodeWithTag("nav_tab_sing").performClick()
+        composeTestRule.onNodeWithTag("nav_tab_playlists").performClick()
         composeTestRule.waitForIdle()
-        assertEquals(MainTab.SING, currentTab)
-        composeTestRule.onNodeWithTag("nav_tab_icon_sing", useUnmergedTree = true).assertIsDisplayed()
+        assertEquals(MainTab.PLAYLISTS, currentTab)
+        composeTestRule.onNodeWithTag("nav_tab_icon_playlists", useUnmergedTree = true).assertIsDisplayed()
     }
 
     @Test
@@ -1824,192 +1820,6 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("songs_playlists_carousel").assertIsDisplayed()
         composeTestRule.onNodeWithTag("carousel_playlist_card_20").assertIsDisplayed()
         composeTestRule.onNodeWithTag("carousel_playlist_card_10").assertDoesNotExist()
-    }
-
-    @Test
-    fun `HoaCaScreen renders continuous text progress bar keeping past lines 100 percent filled, non-shifting dots, swipe-to-refresh, and coordinated toolbar return button`() {
-        val song = Song(
-            id = 900L,
-            title = "Khúc Hòa Ca Mùa Xuân.mp3",
-            uri = Uri.parse("content://media/external/audio/media/900"),
-            duration = 40_000L,
-            dateAdded = 1L,
-            artist = "Ban Nhạc Mùa Xuân"
-        )
-        val lines = listOf(
-            LyricLine(0, 0L, 10_000L, "Câu thứ nhất đã hát qua giữ nguyên màu"),
-            LyricLine(1, 10_000L, 20_000L, "Câu thứ hai cũng đã hát xong trọn vẹn"),
-            LyricLine(2, 20_000L, 30_000L, "Câu thứ ba đang hát ở đúng giữa câu này"),
-            LyricLine(3, 30_000L, 40_000L, "Câu thứ tư phía dưới chưa hát tới")
-        )
-
-        // Verify exact mathematical rules for calculateLineProgress at 25_000ms:
-        // - Past lines (0, 1) -> 1.0f (100% retained!)
-        // - Active line (2) -> 0.5f (50% swept)
-        // - Upcoming line (3) -> 0.0f (0% uncolored)
-        assertEquals(1.0f, calculateLineProgress(25_000L, lines[0]), 0.001f)
-        assertEquals(1.0f, calculateLineProgress(25_000L, lines[1]), 0.001f)
-        assertEquals(0.5f, calculateLineProgress(25_000L, lines[2]), 0.001f)
-        assertEquals(0.0f, calculateLineProgress(25_000L, lines[3]), 0.001f)
-
-        val positionFlow = MutableStateFlow(25_000L)
-        var seekedPositionMs = -1L
-        var rescanCount = 0
-
-        val successState = LyricsUiState.Success(
-            songId = song.id,
-            cacheKey = "hash_900",
-            songTitle = "Khúc Hòa Ca Mùa Xuân",
-            artistName = "Ban Nhạc Mùa Xuân",
-            lines = lines,
-            source = LyricsSource.LRCLIB,
-            isSynced = true,
-            fromCache = true
-        )
-
-        composeTestRule.setContent {
-            MyApplicationTheme {
-                var showReturnButton by remember { mutableStateOf(false) }
-                var returnTick by remember { mutableIntStateOf(0) }
-                var isCollapsed by remember { mutableStateOf(false) }
-
-                Box(modifier = Modifier.fillMaxSize()) {
-                    HoaCaScreen(
-                        currentSong = song,
-                        isPlaying = false,
-                        currentPositionMsFlow = positionFlow,
-                        lyricsUiState = successState,
-                        offlineModelState = OfflineModelState(isDownloaded = true),
-                        onSeekTo = { targetMs ->
-                            seekedPositionMs = targetMs
-                            positionFlow.value = targetMs
-                        },
-                        onRescanLyrics = { rescanCount++ },
-                        onDownloadOfflineModel = {},
-                        returnToActiveRequestTick = returnTick,
-                        onReturnToActiveVisibilityChanged = { visible ->
-                            showReturnButton = visible
-                        },
-                        modifier = Modifier.fillMaxSize()
-                    )
-
-                    CapsuleBottomToolbar(
-                        currentTab = MainTab.SING,
-                        onSelectTab = {},
-                        playbackState = PlaybackState(
-                            currentSong = song,
-                            isPlaying = false,
-                            durationMs = 40_000L
-                        ),
-                        currentPositionMsFlow = positionFlow,
-                        isDarkTheme = false,
-                        isPlayerPillCollapsed = isCollapsed,
-                        onTogglePlayerPillCollapsed = { isCollapsed = !isCollapsed },
-                        onCyclePlayMode = {},
-                        onTogglePlayPause = {},
-                        onSeek = {},
-                        onOpenQueue = {},
-                        onOpenSettings = {},
-                        showReturnToActiveButton = showReturnButton,
-                        onReturnToActiveClick = { returnTick++ },
-                        modifier = Modifier.align(Alignment.BottomCenter)
-                    )
-                }
-            }
-        }
-
-        composeTestRule.waitForIdle()
-
-        // 1. Minimal header: only song title on the left (no artist/subtitle), only sync icon badge on right (no text label, no refresh button)
-        composeTestRule.onNodeWithTag("hoaca_song_title").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Khúc Hòa Ca Mùa Xuân").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Ban Nhạc Mùa Xuân").assertDoesNotExist()
-        composeTestRule.onNodeWithText("LRCLIB").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("btn_rescan_lyrics").assertDoesNotExist()
-        composeTestRule.onNodeWithTag("lyrics_source_badge").assertIsDisplayed()
-
-        // 2. Non-shifting dot indicator: text starts at exact same X coordinate for both active and inactive lines
-        composeTestRule.onNodeWithTag("active_lyric_indicator_2", useUnmergedTree = true).assertIsDisplayed()
-        val line0Left = composeTestRule.onNodeWithTag("lyric_text_0", useUnmergedTree = true)
-            .fetchSemanticsNode().boundsInRoot.left
-        val line2Left = composeTestRule.onNodeWithTag("lyric_text_2", useUnmergedTree = true)
-            .fetchSemanticsNode().boundsInRoot.left
-        assertTrue(abs(line0Left - line2Left) < 0.5f)
-
-        // 3. Continuous Text Progress Bar states at 25_000ms
-        assertEquals(
-            "progress_100",
-            composeTestRule.onNodeWithTag("lyric_line_0").fetchSemanticsNode().config[SemanticsProperties.StateDescription]
-        )
-        assertEquals(
-            "progress_100",
-            composeTestRule.onNodeWithTag("lyric_line_1").fetchSemanticsNode().config[SemanticsProperties.StateDescription]
-        )
-        assertEquals(
-            "progress_50",
-            composeTestRule.onNodeWithTag("lyric_line_2").fetchSemanticsNode().config[SemanticsProperties.StateDescription]
-        )
-        assertEquals(
-            "progress_0",
-            composeTestRule.onNodeWithTag("lyric_line_3").fetchSemanticsNode().config[SemanticsProperties.StateDescription]
-        )
-
-        // 4. Swipe-to-refresh triggers rescan callback
-        composeTestRule.onNodeWithTag("lyrics_lazy_column").performTouchInput {
-            swipeDown()
-        }
-        composeTestRule.waitForIdle()
-        assertTrue(rescanCount >= 1)
-
-        // 5. Tap-to-Seek: clicking line 3 seeks to 30_000ms and immediately fills lines 0, 1, 2 to 100%
-        composeTestRule.onNodeWithTag("lyric_line_3").performClick()
-        composeTestRule.waitForIdle()
-        assertEquals(30_000L, seekedPositionMs)
-        assertEquals(
-            "progress_100",
-            composeTestRule.onNodeWithTag("lyric_line_2").fetchSemanticsNode().config[SemanticsProperties.StateDescription]
-        )
-
-        // 6. Swiping manually up pauses auto-scroll and reveals circular btn_return_to_active_lyric to the right of progress bar
-        composeTestRule.onNodeWithTag("lyrics_lazy_column").performTouchInput {
-            swipeUp(
-                startY = bottom * 0.55f,
-                endY = bottom * 0.15f
-            )
-        }
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("btn_return_to_active_lyric").assertIsDisplayed()
-
-        val expandedPillBounds = composeTestRule.onNodeWithTag("bottom_now_playing_pill")
-            .fetchSemanticsNode().boundsInRoot
-        val expandedModeBounds = composeTestRule.onNodeWithTag("btn_play_mode")
-            .fetchSemanticsNode().boundsInRoot
-        val returnBtnBoundsExpanded = composeTestRule.onNodeWithTag("btn_return_to_active_lyric")
-            .fetchSemanticsNode().boundsInRoot
-        assertTrue(expandedModeBounds.left >= expandedPillBounds.right)
-        assertTrue(returnBtnBoundsExpanded.left >= expandedModeBounds.right)
-        assertTrue(abs(returnBtnBoundsExpanded.height - expandedPillBounds.height) < 2.5f)
-        assertTrue(abs(returnBtnBoundsExpanded.width - returnBtnBoundsExpanded.height) < 2.5f)
-
-        // Collapsing the progress bar brings both external Repeat and btn_return_to_active_lyric inward alongside the collapsed pill
-        composeTestRule.onNodeWithTag("btn_pill_collapse_expand").performClick()
-        composeTestRule.waitForIdle()
-        val collapsedPillBounds = composeTestRule.onNodeWithTag("bottom_now_playing_pill")
-            .fetchSemanticsNode().boundsInRoot
-        val collapsedModeBounds = composeTestRule.onNodeWithTag("btn_play_mode")
-            .fetchSemanticsNode().boundsInRoot
-        val returnBtnBoundsCollapsed = composeTestRule.onNodeWithTag("btn_return_to_active_lyric")
-            .fetchSemanticsNode().boundsInRoot
-        assertTrue(collapsedPillBounds.width < expandedPillBounds.width)
-        assertTrue(collapsedModeBounds.left < expandedModeBounds.left)
-        assertTrue(collapsedModeBounds.left >= collapsedPillBounds.right)
-        assertTrue(returnBtnBoundsCollapsed.left < returnBtnBoundsExpanded.left)
-        assertTrue(returnBtnBoundsCollapsed.left >= collapsedModeBounds.right)
-
-        // Clicking btn_return_to_active_lyric resumes auto-scroll and hides the circular button
-        composeTestRule.onNodeWithTag("btn_return_to_active_lyric").performClick()
-        composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("btn_return_to_active_lyric").assertDoesNotExist()
     }
 
     @Test
@@ -2618,7 +2428,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `bottom toolbar capsule indicator slides across tabs with bouncy spring animation`() {
+    fun `bottom toolbar pill scales up to midpoint and shrinks back while tab buttons bounce in place`() {
         val posFlow = MutableStateFlow(0L)
         var currentTab by mutableStateOf(MainTab.SONGS)
 
@@ -2646,49 +2456,645 @@ class ExampleRobolectricTest {
             .fetchSemanticsNode().boundsInRoot
         assertEquals(songsBounds.left, initialIndicator.left, 2f)
         assertEquals(songsBounds.width, initialIndicator.width, 2f)
+        val defaultPillHeight = initialIndicator.height
 
-        // Click SING (rightmost tab) and pause autoAdvance to observe mid-flight sliding pill
-        composeTestRule.mainClock.autoAdvance = false
-        composeTestRule.onNodeWithTag("nav_tab_sing").performClick()
-        composeTestRule.mainClock.advanceTimeBy(96L)
+        val initialPlaylistsContentHeight = composeTestRule.onNodeWithTag("nav_tab_playlists_content", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot.height
 
-        val singBoundsDuringMove = composeTestRule.onNodeWithTag("nav_tab_sing").fetchSemanticsNode().boundsInRoot
-        val midFlightIndicator = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
-            .fetchSemanticsNode().boundsInRoot
-        assertTrue(midFlightIndicator.center.x > initialIndicator.center.x + 8f)
-        assertTrue(midFlightIndicator.center.x < singBoundsDuringMove.center.x)
-
-        composeTestRule.mainClock.autoAdvance = true
-        composeTestRule.waitForIdle()
-
-        val singFinalBounds = composeTestRule.onNodeWithTag("nav_tab_sing").fetchSemanticsNode().boundsInRoot
-        val indicatorAtSing = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
-            .fetchSemanticsNode().boundsInRoot
-        assertEquals(singFinalBounds.left, indicatorAtSing.left, 2.5f)
-        assertEquals(singFinalBounds.width, indicatorAtSing.width, 2.5f)
-
-        // Slide back to middle tab PLAYLISTS and check bouncy overshoot past target left before settling
+        // Click PLAYLISTS and pause autoAdvance to observe midpoint pill enlargement and selected tab pop-enlarge + elastic return
         composeTestRule.mainClock.autoAdvance = false
         composeTestRule.onNodeWithTag("nav_tab_playlists").performClick()
-        var sawLeftOvershoot = false
-        repeat(15) {
-            composeTestRule.mainClock.advanceTimeBy(24L)
+
+        var maxPillHeightDuringTravel = defaultPillHeight
+        var maxPlaylistsContentHeight = initialPlaylistsContentHeight
+        var minPlaylistsContentHeightAfterPeak = initialPlaylistsContentHeight
+        var sawEnlargePeak = false
+
+        repeat(35) {
+            composeTestRule.mainClock.advanceTimeBy(16L)
             val playlistsBoundsNow = composeTestRule.onNodeWithTag("nav_tab_playlists").fetchSemanticsNode().boundsInRoot
+            val playlistsContentNow = composeTestRule.onNodeWithTag("nav_tab_playlists_content", useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot
+            val songsBoundsNow = composeTestRule.onNodeWithTag("nav_tab_songs").fetchSemanticsNode().boundsInRoot
+            val songsContentNow = composeTestRule.onNodeWithTag("nav_tab_songs_content", useUnmergedTree = true)
+                .fetchSemanticsNode().boundsInRoot
             val indicatorNow = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
                 .fetchSemanticsNode().boundsInRoot
-            if (indicatorNow.center.x < playlistsBoundsNow.center.x - 1f) {
-                sawLeftOvershoot = true
+
+            if (indicatorNow.height > maxPillHeightDuringTravel) {
+                maxPillHeightDuringTravel = indicatorNow.height
+            }
+
+            // Tab content stays centered in place inside its button (never chases the pill horizontally)
+            assertEquals(playlistsBoundsNow.center.x, playlistsContentNow.center.x, 1.5f)
+            assertEquals(songsBoundsNow.center.x, songsContentNow.center.x, 1.5f)
+
+            if (playlistsContentNow.height > maxPlaylistsContentHeight) {
+                maxPlaylistsContentHeight = playlistsContentNow.height
+            }
+            if (maxPlaylistsContentHeight > initialPlaylistsContentHeight * 1.12f) {
+                sawEnlargePeak = true
+            }
+            if (sawEnlargePeak && playlistsContentNow.height < minPlaylistsContentHeightAfterPeak) {
+                minPlaylistsContentHeightAfterPeak = playlistsContentNow.height
             }
         }
-        assertTrue("Expected spring overshoot past middle tab when sliding right-to-left", sawLeftOvershoot)
+
+        assertTrue(
+            "Expected dark pill to enlarge moderately around travel midpoint (peak=$maxPillHeightDuringTravel, default=$defaultPillHeight)",
+            maxPillHeightDuringTravel > defaultPillHeight * 1.06f
+        )
+        assertTrue(
+            "Expected selected tab icon+label to enlarge slightly on tap (peak=$maxPlaylistsContentHeight, initial=$initialPlaylistsContentHeight)",
+            sawEnlargePeak
+        )
+        assertTrue(
+            "Expected elastic spring undershoot below 1.0x after enlarge peak before settling (min=$minPlaylistsContentHeightAfterPeak, initial=$initialPlaylistsContentHeight)",
+            minPlaylistsContentHeightAfterPeak < initialPlaylistsContentHeight * 0.98f
+        )
 
         composeTestRule.mainClock.autoAdvance = true
         composeTestRule.waitForIdle()
+
         val playlistsFinalBounds = composeTestRule.onNodeWithTag("nav_tab_playlists").fetchSemanticsNode().boundsInRoot
         val indicatorAtPlaylists = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
             .fetchSemanticsNode().boundsInRoot
+        val contentAtPlaylists = composeTestRule.onNodeWithTag("nav_tab_playlists_content", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
         assertEquals(playlistsFinalBounds.left, indicatorAtPlaylists.left, 2.5f)
         assertEquals(playlistsFinalBounds.width, indicatorAtPlaylists.width, 2.5f)
+        assertEquals(defaultPillHeight, indicatorAtPlaylists.height, 1.5f)
+        assertEquals(playlistsFinalBounds.center.x, contentAtPlaylists.center.x, 1.5f)
+        assertEquals(initialPlaylistsContentHeight, contentAtPlaylists.height, 1.5f)
+
+        // Switch back to SONGS tab and verify pill shrinks back to default and content stays centered
+        composeTestRule.onNodeWithTag("nav_tab_songs").performClick()
+        composeTestRule.waitForIdle()
+        val songsFinalBounds = composeTestRule.onNodeWithTag("nav_tab_songs").fetchSemanticsNode().boundsInRoot
+        val indicatorAtSongs = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val contentAtSongs = composeTestRule.onNodeWithTag("nav_tab_songs_content", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        assertEquals(songsFinalBounds.left, indicatorAtSongs.left, 2.5f)
+        assertEquals(songsFinalBounds.width, indicatorAtSongs.width, 2.5f)
+        assertEquals(defaultPillHeight, indicatorAtSongs.height, 1.5f)
+        assertEquals(songsFinalBounds.center.x, contentAtSongs.center.x, 1.5f)
+    }
+
+    @Test
+    fun `playlist detail 4-dot drag handle reorders songs strictly vertically within container bounds and updates indices`() {
+        val song1 = Song(1L, "Track One.mp3", Uri.parse("content://media/1"), 120_000L, 1L)
+        val song2 = Song(2L, "Track Two.mp3", Uri.parse("content://media/2"), 150_000L, 2L)
+        val song3 = Song(3L, "Track Three.mp3", Uri.parse("content://media/3"), 180_000L, 3L)
+        var playlistState by mutableStateOf(
+            Playlist(id = 77L, name = "Top Hits", createdAt = 1L, songs = listOf(song1, song2, song3))
+        )
+        var lastReorderedIds by mutableStateOf<List<Long>>(emptyList())
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                PlaylistDetailScreen(
+                    playlist = playlistState,
+                    playbackState = PlaybackState(),
+                    onBack = {},
+                    onPlayAll = {},
+                    onAddSongs = {},
+                    onReorderSongs = { reordered ->
+                        lastReorderedIds = reordered.map { it.id }
+                        playlistState = playlistState.copy(songs = reordered)
+                    },
+                    onSongClick = {},
+                    onRemoveSongFromPlaylist = {},
+                    contentTopPadding = 12.dp,
+                    contentBottomPadding = 90.dp,
+                    isDarkTheme = false
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        val card1InitialBounds = composeTestRule.onNodeWithTag("playlist_song_card_1").fetchSemanticsNode().boundsInRoot
+        val card3InitialBounds = composeTestRule.onNodeWithTag("playlist_song_card_3").fetchSemanticsNode().boundsInRoot
+        val drag1Bounds = composeTestRule.onNodeWithTag("btn_drag_song_1", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val listBounds = composeTestRule.onNodeWithTag("playlist_detail_lazy_column").fetchSemanticsNode().boundsInRoot
+
+        // 4-dot handle sits at the trailing right edge of the song card
+        assertTrue(drag1Bounds.left > card1InitialBounds.center.x)
+        assertTrue(drag1Bounds.right <= card1InitialBounds.right + 1f)
+
+        // Long-press the 4-dot handle of song 1 and drag diagonally (large X drift + vertical past song 3 bottom)
+        val dragDownDistance = (card3InitialBounds.bottom - card1InitialBounds.center.y) + 120f
+        composeTestRule.onNodeWithTag("btn_drag_song_1", useUnmergedTree = true).performTouchInput {
+            down(center)
+            advanceEventTime(650L)
+            moveBy(Offset(140f, dragDownDistance / 2f))
+            advanceEventTime(50L)
+            moveBy(Offset(-90f, dragDownDistance / 2f))
+            advanceEventTime(50L)
+        }
+        composeTestRule.waitForIdle()
+
+        // Strictly locked to vertical axis (no horizontal drift) and clamped within playlist list bounds
+        val card1DuringDrag = composeTestRule.onNodeWithTag("playlist_song_card_1").fetchSemanticsNode().boundsInRoot
+        assertEquals(card1InitialBounds.left, card1DuringDrag.left, 2.5f)
+        assertTrue(
+            "Dragged card bottom (${card1DuringDrag.bottom}) escaped list bounds (${listBounds.bottom})",
+            card1DuringDrag.bottom <= listBounds.bottom + 4f
+        )
+        // Dragging the 4-dot handle must NOT reveal delete button
+        composeTestRule.onNodeWithTag("action_remove_from_playlist_1", useUnmergedTree = true).assertDoesNotExist()
+
+        // Release finger -> snaps cleanly and updates order & numbering 1, 2, 3
+        composeTestRule.onNodeWithTag("btn_drag_song_1", useUnmergedTree = true).performTouchInput {
+            up()
+        }
+        composeTestRule.waitForIdle()
+
+        assertEquals(listOf(2L, 3L, 1L), lastReorderedIds)
+        composeTestRule.onNode(
+            hasText("1") and hasAnyAncestor(hasTestTag("song_index_2")),
+            useUnmergedTree = true
+        ).assertIsDisplayed()
+        composeTestRule.onNode(
+            hasText("2") and hasAnyAncestor(hasTestTag("song_index_3")),
+            useUnmergedTree = true
+        ).assertIsDisplayed()
+        composeTestRule.onNode(
+            hasText("3") and hasAnyAncestor(hasTestTag("song_index_1")),
+            useUnmergedTree = true
+        ).assertIsDisplayed()
+
+        val card2After = composeTestRule.onNodeWithTag("playlist_song_card_2").fetchSemanticsNode().boundsInRoot
+        val card3After = composeTestRule.onNodeWithTag("playlist_song_card_3").fetchSemanticsNode().boundsInRoot
+        val card1After = composeTestRule.onNodeWithTag("playlist_song_card_1").fetchSemanticsNode().boundsInRoot
+        assertTrue(card2After.top < card3After.top)
+        assertTrue(card3After.top < card1After.top)
+    }
+
+    @Test
+    fun `playlist detail removes swipe-left delete gesture and isolates card body long-press reveal from 4-dot drag handle`() {
+        val song1 = Song(1L, "Bài Hát A.mp3", Uri.parse("content://media/1"), 120_000L, 1L)
+        val song2 = Song(2L, "Bài Hát B.mp3", Uri.parse("content://media/2"), 150_000L, 2L)
+        var removedSongId: Long? = null
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                PlaylistDetailScreen(
+                    playlist = Playlist(id = 91L, name = "Chill", createdAt = 1L, songs = listOf(song1, song2)),
+                    playbackState = PlaybackState(),
+                    onBack = {},
+                    onPlayAll = {},
+                    onAddSongs = {},
+                    onSongClick = {},
+                    onRemoveSongFromPlaylist = { removedSongId = it.id },
+                    contentTopPadding = 12.dp,
+                    contentBottomPadding = 90.dp,
+                    isDarkTheme = false
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        // 1. Horizontal swipe-left across song card must NOT reveal remove/delete button
+        composeTestRule.onNodeWithTag("playlist_song_card_1").performTouchInput {
+            swipeLeft()
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("action_remove_from_playlist_1", useUnmergedTree = true).assertDoesNotExist()
+
+        // 2. Long-pressing the 4-dot drag handle must NOT reveal remove/delete button
+        composeTestRule.onNodeWithTag("btn_drag_song_1", useUnmergedTree = true).performTouchInput {
+            longClick()
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("action_remove_from_playlist_1", useUnmergedTree = true).assertDoesNotExist()
+
+        // 3. Long-pressing the song card body (outside drag handle) opens and keeps remove button visible after lift
+        composeTestRule.onNodeWithTag("playlist_song_card_1").performTouchInput {
+            longClick(centerLeft + Offset(40f, 0f))
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("action_remove_from_playlist_1", useUnmergedTree = true).assertIsDisplayed()
+
+        composeTestRule.onNodeWithTag("action_remove_from_playlist_1", useUnmergedTree = true).performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(1L, removedSongId)
+    }
+
+    @Test
+    fun `bottom toolbar handles rapid 2-tab switching without desyncing active indicator and tab content`() {
+        val posFlow = MutableStateFlow(0L)
+        var currentTab by mutableStateOf(MainTab.SONGS)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                CapsuleBottomToolbar(
+                    currentTab = currentTab,
+                    onSelectTab = { currentTab = it },
+                    playbackState = PlaybackState(),
+                    currentPositionMsFlow = posFlow,
+                    isDarkTheme = false,
+                    onCyclePlayMode = {},
+                    onTogglePlayPause = {},
+                    onSeek = {},
+                    onOpenQueue = {},
+                    onOpenSettings = {}
+                )
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        // Rapid multi-tap sequence across Songs and Playlists tabs
+        composeTestRule.onNodeWithTag("nav_tab_playlists").performClick()
+        composeTestRule.mainClock.advanceTimeBy(32L)
+        composeTestRule.onNodeWithTag("nav_tab_songs").performClick()
+        composeTestRule.mainClock.advanceTimeBy(32L)
+        composeTestRule.onNodeWithTag("nav_tab_playlists").performClick()
+
+        composeTestRule.waitForIdle()
+
+        assertEquals(MainTab.PLAYLISTS, currentTab)
+        composeTestRule.onNodeWithTag("nav_tab_icon_playlists", useUnmergedTree = true).assertIsDisplayed()
+        val playlistsBounds = composeTestRule.onNodeWithTag("nav_tab_playlists").fetchSemanticsNode().boundsInRoot
+        val indicatorBounds = composeTestRule.onNodeWithTag("nav_pill_active_indicator", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+        val contentBounds = composeTestRule.onNodeWithTag("nav_tab_playlists_content", useUnmergedTree = true)
+            .fetchSemanticsNode().boundsInRoot
+
+        assertEquals(playlistsBounds.left, indicatorBounds.left, 2.5f)
+        assertEquals(playlistsBounds.width, indicatorBounds.width, 2.5f)
+        assertEquals(playlistsBounds.center.x, contentBounds.center.x, 1.5f)
+    }
+
+    @Test
+    fun `quick return floating header hides on swipe up and immediately floats back on swipe down across Songs and Playlists`() {
+        val manySongs = (1..25).map { idx ->
+            Song(
+                id = idx.toLong(),
+                title = "Track Number $idx.mp3",
+                uri = Uri.parse("content://media/$idx"),
+                duration = 180_000L,
+                dateAdded = idx.toLong()
+            )
+        }
+        val manyPlaylists = (1..16).map { idx ->
+            Playlist(
+                id = (idx * 10).toLong(),
+                name = "Playlist $idx",
+                createdAt = idx.toLong(),
+                songs = listOf(manySongs.first())
+            )
+        }
+        var activeTab by mutableStateOf(MainTab.SONGS)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (activeTab) {
+                        MainTab.SONGS -> {
+                            SongList(
+                                songs = manySongs,
+                                playlists = manyPlaylists.take(4),
+                                playbackState = PlaybackState(),
+                                onSongClick = {},
+                                onAddToPlaylist = {},
+                                onRenameSong = { _, _ -> },
+                                onDeleteSong = {},
+                                contentTopPadding = 12.dp,
+                                contentBottomPadding = 90.dp,
+                                isDarkTheme = false,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        MainTab.PLAYLISTS -> {
+                            PlaylistsOverviewScreen(
+                                playlists = manyPlaylists,
+                                playbackState = PlaybackState(),
+                                onCreatePlaylist = {},
+                                onOpenPlaylist = {},
+                                onPlayPlaylist = {},
+                                onRequestDeletePlaylist = {},
+                                contentTopPadding = 12.dp,
+                                contentBottomPadding = 90.dp,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. SONGS TAB: Capsule search bar starts above carousel, hides on swipe up, and slides down proportionally with finger swipe (not all at once)
+        composeTestRule.waitForIdle()
+        val songsInitialBounds = composeTestRule.onNodeWithTag("songs_search_bar").fetchSemanticsNode().boundsInRoot
+        val carouselInitialBounds = composeTestRule.onNodeWithTag("songs_playlists_carousel").fetchSemanticsNode().boundsInRoot
+        assertTrue(songsInitialBounds.bottom <= carouselInitialBounds.top)
+
+        composeTestRule.onNodeWithTag("songs_lazy_column").performTouchInput {
+            swipeUp(startY = bottom * 0.8f, endY = top + 40f)
+        }
+        composeTestRule.waitForIdle()
+        val songsHiddenBounds = composeTestRule.onNodeWithTag("songs_search_bar").fetchSemanticsNode().boundsInRoot
+        assertTrue(songsHiddenBounds.top < songsInitialBounds.top - 30f)
+
+        // Partial downward drag while still scrolled deep in list -> search capsule slides down partially following the finger (does NOT drop all at once)
+        composeTestRule.onNodeWithTag("songs_lazy_column").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 36f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        val songsPartialBounds = composeTestRule.onNodeWithTag("songs_search_bar").fetchSemanticsNode().boundsInRoot
+        assertTrue(songsPartialBounds.top > songsHiddenBounds.top + 8f)
+        assertTrue(songsPartialBounds.top < songsInitialBounds.top - 8f)
+
+        // Continue downward drag -> search capsule completes sliding down to full visible position
+        composeTestRule.onNodeWithTag("songs_lazy_column").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 80f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        val songsRevealedBounds = composeTestRule.onNodeWithTag("songs_search_bar").fetchSemanticsNode().boundsInRoot
+        assertEquals(songsInitialBounds.top, songsRevealedBounds.top, 1.5f)
+
+        // 2. PLAYLISTS TAB: Search + Add (+) row starts above first row of playlists, hides on swipe up, and slides down proportionally with finger swipe
+        activeTab = MainTab.PLAYLISTS
+        composeTestRule.waitForIdle()
+        val plHeaderInitial = composeTestRule.onNodeWithTag("playlists_floating_header").fetchSemanticsNode().boundsInRoot
+        val plCard1Initial = composeTestRule.onNodeWithTag("playlist_card_10").fetchSemanticsNode().boundsInRoot
+        assertTrue(plHeaderInitial.bottom <= plCard1Initial.top)
+
+        composeTestRule.onNodeWithTag("playlists_lazy_grid").performTouchInput {
+            swipeUp(startY = bottom * 0.8f, endY = top + 40f)
+        }
+        composeTestRule.waitForIdle()
+        val plHeaderHidden = composeTestRule.onNodeWithTag("playlists_floating_header").fetchSemanticsNode().boundsInRoot
+        assertTrue(plHeaderHidden.top < plHeaderInitial.top - 30f)
+
+        composeTestRule.onNodeWithTag("playlists_lazy_grid").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 36f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        val plHeaderPartial = composeTestRule.onNodeWithTag("playlists_floating_header").fetchSemanticsNode().boundsInRoot
+        assertTrue(plHeaderPartial.top > plHeaderHidden.top + 8f)
+        assertTrue(plHeaderPartial.top < plHeaderInitial.top - 8f)
+
+        composeTestRule.onNodeWithTag("playlists_lazy_grid").performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 80f))
+            up()
+        }
+        composeTestRule.waitForIdle()
+        val plHeaderRevealed = composeTestRule.onNodeWithTag("playlists_floating_header").fetchSemanticsNode().boundsInRoot
+        assertEquals(plHeaderInitial.top, plHeaderRevealed.top, 1.5f)
+    }
+
+    @Test
+    fun `app preload screen centers single MD3 indicator until all 2 tabs and data are pre-rendered then fades out and per-page loading keeps toolbar interactive`() {
+        val songs = (1L..25L).map { id ->
+            Song(id, "Bài Hát $id.mp3", Uri.parse("content://media/$id"), 180_000L, id)
+        }
+        val playlists = (10L..15L).map { id ->
+            Playlist(id = id, name = "Playlist $id", createdAt = id, songs = songs.take(2))
+        }
+        val posFlow = MutableStateFlow(1_000L)
+
+        var isInitialDataReady by mutableStateOf(false)
+        var isSongsLoading by mutableStateOf(true)
+        var isPlaylistsLoading by mutableStateOf(true)
+        var currentTab by mutableStateOf(MainTab.SONGS)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                var allTabsPreRendered by remember { mutableStateOf(false) }
+                var isToolbarPreRendered by remember { mutableStateOf(false) }
+                var hasCompletedAppPreload by remember { mutableStateOf(false) }
+
+                if (!hasCompletedAppPreload && isInitialDataReady && allTabsPreRendered && isToolbarPreRendered) {
+                    hasCompletedAppPreload = true
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("preload_test_root")
+                ) {
+                    KeepAliveMainTabHost(
+                        currentTab = currentTab,
+                        isInitialDataReady = isInitialDataReady,
+                        onAllTabsPreRendered = { allTabsPreRendered = true },
+                        modifier = Modifier.fillMaxSize(),
+                        songsContent = {
+                            SongList(
+                                songs = songs,
+                                playlists = playlists,
+                                playbackState = PlaybackState(currentSong = songs.first(), isPlaying = true, durationMs = 180_000L),
+                                onSongClick = {},
+                                onAddToPlaylist = {},
+                                onRenameSong = { _, _ -> },
+                                onDeleteSong = {},
+                                contentTopPadding = 36.dp,
+                                contentBottomPadding = 144.dp,
+                                isDarkTheme = false,
+                                isLoading = isSongsLoading,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        },
+                        playlistsContent = {
+                            PlaylistsOverviewScreen(
+                                playlists = playlists,
+                                playbackState = PlaybackState(currentSong = songs.first(), isPlaying = true, durationMs = 180_000L),
+                                onCreatePlaylist = {},
+                                onOpenPlaylist = {},
+                                onPlayPlaylist = {},
+                                onRequestDeletePlaylist = {},
+                                contentTopPadding = 36.dp,
+                                contentBottomPadding = 144.dp,
+                                isLoading = isPlaylistsLoading,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    )
+
+                    EdgeToEdgeGradientScrims(
+                        statusBarHeight = 24.dp,
+                        navigationBarHeight = 0.dp
+                    )
+
+                    CapsuleBottomToolbar(
+                        currentTab = currentTab,
+                        onSelectTab = { currentTab = it },
+                        playbackState = PlaybackState(currentSong = songs.first(), isPlaying = true, durationMs = 180_000L),
+                        activePlaylistName = "Playlist 10",
+                        currentPositionMsFlow = posFlow,
+                        isDarkTheme = false,
+                        onCyclePlayMode = {},
+                        onTogglePlayPause = {},
+                        onSeek = {},
+                        onOpenQueue = {},
+                        onOpenSettings = {},
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .also { isToolbarPreRendered = true }
+                    )
+
+                    if (!hasCompletedAppPreload) {
+                        AppPreloadScreen(modifier = Modifier.fillMaxSize())
+                    }
+                }
+            }
+        }
+
+        composeTestRule.waitForIdle()
+
+        // 1. While initial data is not ready, AppPreloadScreen covers full screen with centered MD3 indicator
+        val rootBounds = composeTestRule.onNodeWithTag("preload_test_root").fetchSemanticsNode().boundsInRoot
+        val preloadBounds = composeTestRule.onNodeWithTag("app_preload_screen").fetchSemanticsNode().boundsInRoot
+        val preloadIndicatorBounds = composeTestRule.onNodeWithTag("app_preload_loading_indicator").fetchSemanticsNode().boundsInRoot
+        assertEquals(rootBounds.width, preloadBounds.width, 1f)
+        assertEquals(rootBounds.height, preloadBounds.height, 1f)
+        assertEquals(rootBounds.center.x, preloadIndicatorBounds.center.x, 1.5f)
+        assertEquals(rootBounds.center.y, preloadIndicatorBounds.center.y, 1.5f)
+
+        // 2. Mark initial data ready -> all 2 pages pre-compose & measure, and AppPreloadScreen disappears
+        isSongsLoading = false
+        isPlaylistsLoading = false
+        isInitialDataReady = true
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("app_preload_screen").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("songs_lazy_column").assertIsDisplayed()
+
+        // 3. Per-Page Loading on Playlists tab: shows centered MD3 indicator while keeping toolbar and NowPlayingPill interactive
+        isPlaylistsLoading = true
+        composeTestRule.onNodeWithTag("nav_tab_playlists").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(MainTab.PLAYLISTS, currentTab)
+        composeTestRule.onNodeWithTag("playlists_page_loading_indicator").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("nav_pill_menu").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_now_playing_pill").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("btn_settings").assertIsDisplayed()
+
+        // User can switch back to Songs tab immediately even while Playlists page is still loading
+        isSongsLoading = true
+        composeTestRule.onNodeWithTag("nav_tab_songs").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(MainTab.SONGS, currentTab)
+        composeTestRule.onNodeWithTag("songs_page_loading_indicator").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("nav_pill_menu").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_now_playing_pill").assertIsDisplayed()
+
+        // Complete per-page loading on both Songs and Playlists -> content appears and stays cached across tab switches
+        isSongsLoading = false
+        isPlaylistsLoading = false
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("songs_page_loading_indicator").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("songs_lazy_column").assertIsDisplayed()
+
+        // 4. Verify Edge-to-Edge Vertical Gradient Scrims at top and bottom (minimum 28.dp height when navBar is 0.dp)
+        val topScrimBounds = composeTestRule.onNodeWithTag("top_edge_gradient_scrim").fetchSemanticsNode().boundsInRoot
+        val bottomScrimBounds = composeTestRule.onNodeWithTag("bottom_edge_gradient_scrim").fetchSemanticsNode().boundsInRoot
+        assertEquals(0f, topScrimBounds.top, 1f)
+        assertEquals(rootBounds.bottom, bottomScrimBounds.bottom, 1f)
+        assertTrue(topScrimBounds.height > 10f)
+        assertTrue(bottomScrimBounds.height >= 24f)
+
+        // Verify scrolling works unimpeded through scrims and scroll state is preserved across tab switches
+        val initialHeaderTop = composeTestRule.onNodeWithTag("songs_floating_header").fetchSemanticsNode().boundsInRoot.top
+        composeTestRule.onNodeWithTag("songs_lazy_column").performTouchInput {
+            swipeUp(startY = centerY, endY = top + 20f)
+        }
+        composeTestRule.waitForIdle()
+        val scrolledHeaderTop = composeTestRule.onNodeWithTag("songs_floating_header").fetchSemanticsNode().boundsInRoot.top
+        assertTrue(scrolledHeaderTop < initialHeaderTop - 15f)
+
+        composeTestRule.onNodeWithTag("nav_tab_playlists").performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("playlist_card_10").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("nav_tab_songs").performClick()
+        composeTestRule.waitForIdle()
+        // Songs tab kept its scrolled state in memory without resetting to initial top
+        val headerTopAfterReturn = composeTestRule.onNodeWithTag("songs_floating_header").fetchSemanticsNode().boundsInRoot.top
+        assertEquals(scrolledHeaderTop, headerTopAfterReturn, 1.5f)
+    }
+
+    @Test
+    fun `headers stay fixed when page content cannot scroll across Songs and Playlists`() {
+        val twoSongs = listOf(
+            Song(1L, "Short Song 1.mp3", Uri.parse("content://media/1"), 120_000L, 1L),
+            Song(2L, "Short Song 2.mp3", Uri.parse("content://media/2"), 120_000L, 2L)
+        )
+        val twoPlaylists = listOf(
+            Playlist(id = 10L, name = "Playlist A", createdAt = 1L, songs = twoSongs),
+            Playlist(id = 20L, name = "Playlist B", createdAt = 2L, songs = twoSongs)
+        )
+        var activeTab by mutableStateOf(MainTab.SONGS)
+
+        composeTestRule.setContent {
+            MyApplicationTheme {
+                Box(modifier = Modifier.fillMaxSize()) {
+                    when (activeTab) {
+                        MainTab.SONGS -> {
+                            SongList(
+                                songs = twoSongs,
+                                playlists = emptyList(),
+                                playbackState = PlaybackState(),
+                                onSongClick = {},
+                                onAddToPlaylist = {},
+                                onRenameSong = { _, _ -> },
+                                onDeleteSong = {},
+                                contentTopPadding = 12.dp,
+                                contentBottomPadding = 90.dp,
+                                isDarkTheme = false,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                        MainTab.PLAYLISTS -> {
+                            PlaylistsOverviewScreen(
+                                playlists = twoPlaylists,
+                                playbackState = PlaybackState(),
+                                onCreatePlaylist = {},
+                                onOpenPlaylist = {},
+                                onPlayPlaylist = {},
+                                onRequestDeletePlaylist = {},
+                                contentTopPadding = 12.dp,
+                                contentBottomPadding = 90.dp,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // 1. SONGS TAB with short content -> swiping up/down does NOT move songs_floating_header
+        composeTestRule.waitForIdle()
+        val songsHeaderBefore = composeTestRule.onNodeWithTag("songs_floating_header").fetchSemanticsNode().boundsInRoot.top
+        composeTestRule.onNodeWithTag("songs_lazy_column").performTouchInput {
+            swipeUp(startY = bottom * 0.7f, endY = top + 40f)
+        }
+        composeTestRule.waitForIdle()
+        val songsHeaderAfterSwipeUp = composeTestRule.onNodeWithTag("songs_floating_header").fetchSemanticsNode().boundsInRoot.top
+        assertEquals(songsHeaderBefore, songsHeaderAfterSwipeUp, 0.5f)
+
+        // 2. PLAYLISTS TAB with short content -> swiping up/down does NOT move playlists_floating_header
+        activeTab = MainTab.PLAYLISTS
+        composeTestRule.waitForIdle()
+        val playlistsHeaderBefore = composeTestRule.onNodeWithTag("playlists_floating_header").fetchSemanticsNode().boundsInRoot.top
+        composeTestRule.onNodeWithTag("playlists_lazy_grid").performTouchInput {
+            swipeUp(startY = bottom * 0.7f, endY = top + 40f)
+        }
+        composeTestRule.waitForIdle()
+        val playlistsHeaderAfterSwipeUp = composeTestRule.onNodeWithTag("playlists_floating_header").fetchSemanticsNode().boundsInRoot.top
+        assertEquals(playlistsHeaderBefore, playlistsHeaderAfterSwipeUp, 0.5f)
     }
 }
+
+
 

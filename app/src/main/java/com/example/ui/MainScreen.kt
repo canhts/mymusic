@@ -9,6 +9,7 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.Spring
@@ -26,15 +27,19 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
@@ -47,9 +52,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.MusicOff
-import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
@@ -59,26 +62,32 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.model.Playlist
@@ -123,18 +132,12 @@ fun MainScreen(
     val hasSeenOnboarding by viewModel.hasSeenOnboarding.collectAsStateWithLifecycle()
     val isPlayerPillCollapsed by viewModel.isPlayerPillCollapsed.collectAsStateWithLifecycle()
     val songs by viewModel.songs.collectAsStateWithLifecycle()
-    val activeQueueSongs by viewModel.activeQueueSongs.collectAsStateWithLifecycle()
     val playlists by viewModel.playlists.collectAsStateWithLifecycle()
     val carouselPlaylists by viewModel.carouselPlaylists.collectAsStateWithLifecycle()
     val playbackState by viewModel.playbackState.collectAsStateWithLifecycle()
-    val lyricsUiState by viewModel.lyricsUiState.collectAsStateWithLifecycle()
-    val offlineModelState by viewModel.offlineModelState.collectAsStateWithLifecycle()
-    val audioSpectrumProfile by viewModel.audioSpectrumProfile.collectAsStateWithLifecycle()
-    val bassStrength by viewModel.bassStrength.collectAsStateWithLifecycle()
-    val trebleStrength by viewModel.trebleStrength.collectAsStateWithLifecycle()
-    val vocalStrength by viewModel.vocalStrength.collectAsStateWithLifecycle()
-    val virtualizerStrength by viewModel.virtualizerStrength.collectAsStateWithLifecycle()
     val isScanning by viewModel.isScanning.collectAsStateWithLifecycle()
+    val isPlaylistsLoading by viewModel.isPlaylistsLoading.collectAsStateWithLifecycle()
+    val isInitialDataReady by viewModel.isInitialDataReady.collectAsStateWithLifecycle()
     val hasPermission by viewModel.hasPermission.collectAsStateWithLifecycle()
     val userMessage by viewModel.userMessage.collectAsStateWithLifecycle()
     val permissionIntentSender by viewModel.permissionIntentSender.collectAsStateWithLifecycle()
@@ -240,8 +243,6 @@ fun MainScreen(
     var songToAddToPlaylist by remember { mutableStateOf<Song?>(null) }
     var playlistToAddSongs by remember { mutableStateOf<Playlist?>(null) }
     var showNowPlayingScreen by remember { mutableStateOf(false) }
-    var isHoaCaReturnToActiveVisible by remember { mutableStateOf(false) }
-    var hoaCaReturnToActiveTick by remember { mutableIntStateOf(0) }
 
     LaunchedEffect(playbackState.currentSong?.id) {
         if (playbackState.currentSong == null) {
@@ -257,12 +258,6 @@ fun MainScreen(
                 durationMs = playbackState.durationMs,
                 positionMs = viewModel.currentPositionMs.value
             )
-        }
-    }
-
-    LaunchedEffect(currentTab, playbackState.currentSong?.id) {
-        if (currentTab != MainTab.SING || playbackState.currentSong == null) {
-            isHoaCaReturnToActiveVisible = false
         }
     }
 
@@ -306,8 +301,18 @@ fun MainScreen(
     val activePlaylistName = remember(playlists, playbackState.activePlaylistId) {
         playbackState.activePlaylistId?.let { id -> playlists.firstOrNull { it.id == id }?.name }
     }
-    val listTopPadding = 12.dp
+    // Hiển thị tràn viền (Edge-to-Edge): nội dung cuộn chạy sát mép trên (0.dp) và mép dưới màn hình,
+    // bù khoảng đệm statusBarPadding vào contentTopPadding của từng trang để đầu danh sách không bị che khuất.
+    val listTopPadding = statusBarPadding + 12.dp
     val listBottomPadding = navBarPadding + if (hasActiveBottomPlayer) 144.dp else 90.dp
+
+    var allTabsPreRendered by remember { mutableStateOf(false) }
+    var isToolbarPreRendered by remember { mutableStateOf(false) }
+    var hasCompletedAppPreload by remember { mutableStateOf(false) }
+
+    if (!hasCompletedAppPreload && isInitialDataReady && allTabsPreRendered && isToolbarPreRendered) {
+        hasCompletedAppPreload = true
+    }
 
     // Tự động thu gọn thanh tiến trình nếu trong vòng 1 phút người dùng không chạm vào bất kỳ đâu trên ứng dụng.
     // Sử dụng MutableStateFlow thay vì Compose State để mọi thao tác chạm/cuộn (120Hz) không gây recompose MainScreen.
@@ -337,262 +342,231 @@ fun MainScreen(
             modifier = Modifier.fillMaxSize()
         )
 
-        Box(
+        // LỚP 1 (Dưới cùng - zIndex = 0f): Vùng nội dung cuộn của 2 trang tràn viền sát mép trên và mép dưới màn hình
+        KeepAliveMainTabHost(
+            currentTab = currentTab,
+            isInitialDataReady = isInitialDataReady,
+            onAllTabsPreRendered = { allTabsPreRendered = true },
             modifier = Modifier
                 .fillMaxSize()
-                .padding(top = statusBarPadding)
-        ) {
-            AnimatedContent(
-                targetState = currentTab,
-                transitionSpec = {
-                    val isMovingForward = targetState.ordinal > initialState.ordinal
-                    val enterSlide = slideInHorizontally(
-                        animationSpec = spring(
-                            dampingRatio = 0.80f,
-                            stiffness = Spring.StiffnessMediumLow
-                        )
-                    ) { fullWidth -> if (isMovingForward) fullWidth / 5 else -fullWidth / 5 }
-                    val exitSlide = slideOutHorizontally(
-                        animationSpec = tween(durationMillis = 160)
-                    ) { fullWidth -> if (isMovingForward) -fullWidth / 7 else fullWidth / 7 }
-                    (enterSlide +
-                        fadeIn(animationSpec = tween(220)) +
-                        scaleIn(
-                            initialScale = 0.96f,
-                            animationSpec = spring(
-                                dampingRatio = 0.78f,
-                                stiffness = Spring.StiffnessMediumLow
-                            )
-                        ))
-                        .togetherWith(
-                            exitSlide +
-                                fadeOut(animationSpec = tween(150)) +
-                                scaleOut(targetScale = 0.96f, animationSpec = tween(150))
-                        )
-                },
-                label = "main_tab_transition",
-                modifier = Modifier.fillMaxSize()
-            ) { tab ->
-                when (tab) {
-                    MainTab.SONGS -> {
-                        when {
-                            !hasPermission -> {
-                                val debouncedPermissionRequest = rememberDebouncedAction(debounceMs = 300L) {
-                                    val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                        arrayOf(
-                                            Manifest.permission.READ_MEDIA_AUDIO,
-                                            Manifest.permission.POST_NOTIFICATIONS
-                                        )
-                                    } else {
-                                        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-                                    }
-                                    permissionLauncher.launch(permissionsToRequest)
-                                }
-                                PermissionRequiredState(
-                                    onRequestPermission = debouncedPermissionRequest,
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(horizontal = 28.dp, vertical = 96.dp)
-                                )
-                            }
-                            isScanning && songs.isEmpty() -> {
-                                ScanningState(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(horizontal = 28.dp, vertical = 96.dp)
-                                )
-                            }
-                            songs.isEmpty() -> {
-                                EmptySongsState(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .padding(horizontal = 28.dp, vertical = 96.dp)
-                                )
-                            }
-                            else -> {
-                                SongList(
-                                    songs = songs,
-                                    playlists = carouselPlaylists,
-                                    playbackState = playbackState,
-                                    onSongClick = viewModel::onSongClickedFromLibrary,
-                                    onCarouselPlaylistClick = { playlist ->
-                                        carouselSheetPlaylistId = playlist.id
-                                    },
-                                    onCarouselPlayPlaylist = viewModel::onPlayPlaylistClicked,
-                                    onAddToPlaylist = { song -> songToAddToPlaylist = song },
-                                    onRenameSong = viewModel::renameSong,
-                                    onDeleteSong = viewModel::deleteSong,
-                                    onOpenPlayer = { showNowPlayingScreen = true },
-                                    contentTopPadding = listTopPadding,
-                                    contentBottomPadding = listBottomPadding,
-                                    isDarkTheme = isDarkTheme,
-                                    modifier = Modifier.fillMaxSize()
-                                )
-                            }
-                        }
-                    }
-
-                    MainTab.PLAYLISTS -> {
-                        AnimatedContent(
-                            targetState = activeDetailPlaylist,
-                            transitionSpec = {
-                                fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(140))
-                            },
-                            label = "playlist_detail_transition",
-                            modifier = Modifier.fillMaxSize()
-                        ) { detailPlaylist ->
-                            if (detailPlaylist == null) {
-                                PlaylistsOverviewScreen(
-                                    playlists = playlists,
-                                    playbackState = playbackState,
-                                    onCreatePlaylist = { showCreatePlaylistDialog = true },
-                                    onOpenPlaylist = { playlist -> selectedPlaylistId = playlist.id },
-                                    onPlayPlaylist = viewModel::onPlayPlaylistClicked,
-                                    onRequestDeletePlaylist = { playlist -> playlistPendingDelete = playlist },
-                                    onReorderPlaylists = viewModel::reorderPlaylists,
-                                    contentTopPadding = listTopPadding,
-                                    contentBottomPadding = listBottomPadding,
-                                    modifier = Modifier.fillMaxSize()
+                .zIndex(0f),
+            songsContent = {
+                when {
+                    !hasPermission -> {
+                        val debouncedPermissionRequest = rememberDebouncedAction(debounceMs = 300L) {
+                            val permissionsToRequest = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                arrayOf(
+                                    Manifest.permission.READ_MEDIA_AUDIO,
+                                    Manifest.permission.POST_NOTIFICATIONS
                                 )
                             } else {
-                                PlaylistDetailScreen(
-                                    playlist = detailPlaylist,
-                                    playbackState = playbackState,
-                                    onBack = { selectedPlaylistId = null },
-                                    onPlayAll = { viewModel.onPlayPlaylistClicked(detailPlaylist) },
-                                    onAddSongs = { playlistToAddSongs = detailPlaylist },
-                                    onRenamePlaylist = { newName ->
-                                        viewModel.renamePlaylist(detailPlaylist, newName)
-                                    },
-                                    onUpdatePlaylistIcon = { iconId ->
-                                        viewModel.updatePlaylistIcon(detailPlaylist, iconId)
-                                    },
-                                    onSongClick = { song ->
-                                        viewModel.onSongClickedFromPlaylist(detailPlaylist, song)
-                                    },
-                                    onRemoveSongFromPlaylist = { song ->
-                                        viewModel.removeSongFromPlaylist(detailPlaylist, song)
-                                    },
-                                    onOpenPlayer = { showNowPlayingScreen = true },
-                                    contentTopPadding = listTopPadding,
-                                    contentBottomPadding = listBottomPadding,
-                                    isDarkTheme = isDarkTheme,
-                                    modifier = Modifier.fillMaxSize()
-                                )
+                                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
                             }
+                            permissionLauncher.launch(permissionsToRequest)
                         }
+                        PermissionRequiredState(
+                            onRequestPermission = debouncedPermissionRequest,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 28.dp, vertical = 96.dp)
+                        )
                     }
-
-                    MainTab.SING -> {
-                        HoaCaScreen(
-                            currentSong = playbackState.currentSong,
-                            isPlaying = playbackState.isPlaying,
-                            currentPositionMsFlow = viewModel.currentPositionMs,
-                            lyricsUiState = lyricsUiState,
-                            offlineModelState = offlineModelState,
-                            onSeekTo = viewModel::onSeekTo,
-                            onRescanLyrics = viewModel::rescanCurrentSongLyrics,
-                            onDownloadOfflineModel = viewModel::downloadOfflineLyricsModel,
-                            returnToActiveRequestTick = hoaCaReturnToActiveTick,
-                            onReturnToActiveVisibilityChanged = { visible ->
-                                isHoaCaReturnToActiveVisible = visible
-                            },
+                    isScanning && songs.isEmpty() -> {
+                        ScanningState(
                             contentTopPadding = listTopPadding,
                             contentBottomPadding = listBottomPadding,
                             modifier = Modifier.fillMaxSize()
                         )
                     }
-                }
-            }
-
-            val primaryThemeColor = MaterialTheme.colorScheme.primary
-
-            SnackbarHost(
-                hostState = snackbarHostState,
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 16.dp)
-                    .padding(horizontal = 20.dp)
-                    .testTag("top_capsule_snackbar")
-            ) { snackbarData ->
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
-                    tonalElevation = 2.dp,
-                    shadowElevation = 0.dp,
-                    border = null,
-                    modifier = Modifier.wrapContentSize()
-                ) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.Center,
-                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CheckCircle,
-                            contentDescription = null,
-                            tint = primaryThemeColor,
-                            modifier = Modifier.size(18.dp)
+                    songs.isEmpty() -> {
+                        EmptySongsState(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .padding(horizontal = 28.dp, vertical = 96.dp)
                         )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = snackbarData.visuals.message,
-                            style = MaterialTheme.typography.labelLarge.copy(
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 13.5.sp
-                            ),
-                            color = MaterialTheme.colorScheme.onSurface,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                    }
+                    else -> {
+                        SongList(
+                            songs = songs,
+                            playlists = carouselPlaylists,
+                            playbackState = playbackState,
+                            onSongClick = viewModel::onSongClickedFromLibrary,
+                            onCarouselPlaylistClick = { playlist ->
+                                carouselSheetPlaylistId = playlist.id
+                            },
+                            onCarouselPlayPlaylist = viewModel::onPlayPlaylistClicked,
+                            onAddToPlaylist = { song -> songToAddToPlaylist = song },
+                            onRenameSong = viewModel::renameSong,
+                            onDeleteSong = viewModel::deleteSong,
+                            onOpenPlayer = { showNowPlayingScreen = true },
+                            contentTopPadding = listTopPadding,
+                            contentBottomPadding = listBottomPadding,
+                            isDarkTheme = isDarkTheme,
+                            isLoading = isScanning,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            },
+            playlistsContent = {
+                AnimatedContent(
+                    targetState = activeDetailPlaylist,
+                    transitionSpec = {
+                        fadeIn(animationSpec = tween(180)) togetherWith fadeOut(animationSpec = tween(140))
+                    },
+                    label = "playlist_detail_transition",
+                    modifier = Modifier.fillMaxSize()
+                ) { detailPlaylist ->
+                    if (detailPlaylist == null) {
+                        PlaylistsOverviewScreen(
+                            playlists = playlists,
+                            playbackState = playbackState,
+                            onCreatePlaylist = { showCreatePlaylistDialog = true },
+                            onOpenPlaylist = { playlist -> selectedPlaylistId = playlist.id },
+                            onPlayPlaylist = viewModel::onPlayPlaylistClicked,
+                            onRequestDeletePlaylist = { playlist -> playlistPendingDelete = playlist },
+                            onReorderPlaylists = viewModel::reorderPlaylists,
+                            contentTopPadding = listTopPadding,
+                            contentBottomPadding = listBottomPadding,
+                            isLoading = isPlaylistsLoading,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } else {
+                        PlaylistDetailScreen(
+                            playlist = detailPlaylist,
+                            playbackState = playbackState,
+                            onBack = { selectedPlaylistId = null },
+                            onPlayAll = { viewModel.onPlayPlaylistClicked(detailPlaylist) },
+                            onAddSongs = { playlistToAddSongs = detailPlaylist },
+                            onRenamePlaylist = { newName ->
+                                viewModel.renamePlaylist(detailPlaylist, newName)
+                            },
+                            onUpdatePlaylistIcon = { iconId ->
+                                viewModel.updatePlaylistIcon(detailPlaylist, iconId)
+                            },
+                            onReorderSongs = { reordered ->
+                                viewModel.reorderPlaylistSongs(detailPlaylist, reordered)
+                            },
+                            onSongClick = { song ->
+                                viewModel.onSongClickedFromPlaylist(detailPlaylist, song)
+                            },
+                            onRemoveSongFromPlaylist = { song ->
+                                viewModel.removeSongFromPlaylist(detailPlaylist, song)
+                            },
+                            onOpenPlayer = { showNowPlayingScreen = true },
+                            contentTopPadding = listTopPadding,
+                            contentBottomPadding = listBottomPadding,
+                            isDarkTheme = isDarkTheme,
+                            isLoading = isPlaylistsLoading,
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
                 }
             }
+        )
 
-            key(songs.isNotEmpty()) {
-                CapsuleBottomToolbar(
-                    currentTab = currentTab,
-                    onSelectTab = { newTab ->
-                        if (currentTab == newTab && newTab == MainTab.PLAYLISTS) {
-                            selectedPlaylistId = null
-                        } else {
-                            currentTab = newTab
-                        }
-                    },
-                    playbackState = playbackState,
-                    activePlaylistName = activePlaylistName,
-                    currentPositionMsFlow = viewModel.currentPositionMs,
-                    isDarkTheme = isDarkTheme,
-                    showSettingsPopup = showSettingsPopup,
-                    isPlayerPillCollapsed = isPlayerPillCollapsed,
-                    onTogglePlayerPillCollapsed = {
-                        viewModel.setPlayerPillCollapsed(!isPlayerPillCollapsed)
-                    },
-                    bottomInsetPadding = navBarPadding,
-                    onCyclePlayMode = {
-                        showSettingsPopup = false
-                        viewModel.onCyclePlayMode()
-                    },
-                    onTogglePlayPause = {
-                        showSettingsPopup = false
-                        viewModel.onTogglePlayPause()
-                    },
-                    onSeek = viewModel::onSeekTo,
-                    onOpenQueue = { showCurrentQueueSheet = true },
-                    onOpenSettings = {
-                        showSettingsPopup = !showSettingsPopup
-                    },
-                    showReturnToActiveButton = currentTab == MainTab.SING && isHoaCaReturnToActiveVisible,
-                    onReturnToActiveClick = {
-                        hoaCaReturnToActiveTick++
-                    },
-                    modifier = Modifier.align(Alignment.BottomCenter)
-                )
+        // LỚP 2 (Ở giữa - zIndex = 1f): Hai dải nền chuyển sắc dọc (Vertical Gradient Scrim) ở cạnh trên và cạnh dưới,
+        // nằm đè lên nội dung cuộn để tạo hiệu ứng mờ dần ở hai đầu nhưng nằm dưới cụm thanh công cụ, không chặn thao tác chạm.
+        EdgeToEdgeGradientScrims(
+            statusBarHeight = statusBarPadding,
+            navigationBarHeight = navBarPadding,
+            backgroundColor = MaterialTheme.colorScheme.background
+        )
+
+        // LỚP 3 (Nổi lên trên cùng - zIndex = 3f & 4f): Cụm thanh công cụ phía dưới và thông báo nổi hoàn toàn trên lớp chuyển sắc đáy
+        CapsuleBottomToolbar(
+            currentTab = currentTab,
+            onSelectTab = { newTab ->
+                if (currentTab == newTab && newTab == MainTab.PLAYLISTS) {
+                    selectedPlaylistId = null
+                } else {
+                    currentTab = newTab
+                }
+            },
+            playbackState = playbackState,
+            activePlaylistName = activePlaylistName,
+            currentPositionMsFlow = viewModel.currentPositionMs,
+            isDarkTheme = isDarkTheme,
+            showSettingsPopup = showSettingsPopup,
+            isPlayerPillCollapsed = isPlayerPillCollapsed,
+            onTogglePlayerPillCollapsed = {
+                viewModel.setPlayerPillCollapsed(!isPlayerPillCollapsed)
+            },
+            bottomInsetPadding = navBarPadding,
+            onCyclePlayMode = {
+                showSettingsPopup = false
+                viewModel.onCyclePlayMode()
+            },
+            onTogglePlayPause = {
+                showSettingsPopup = false
+                viewModel.onTogglePlayPause()
+            },
+            onSeek = viewModel::onSeekTo,
+            onOpenQueue = { showCurrentQueueSheet = true },
+            onOpenSettings = {
+                showSettingsPopup = !showSettingsPopup
+            },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .zIndex(3f)
+                .onGloballyPositioned {
+                    if (!isToolbarPreRendered) {
+                        isToolbarPreRendered = true
+                    }
+                }
+        )
+
+        val primaryThemeColor = MaterialTheme.colorScheme.primary
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .zIndex(4f)
+                .padding(top = statusBarPadding + 16.dp)
+                .padding(horizontal = 20.dp)
+                .testTag("top_capsule_snackbar")
+        ) { snackbarData ->
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                tonalElevation = 2.dp,
+                shadowElevation = 0.dp,
+                border = null,
+                modifier = Modifier.wrapContentSize()
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 9.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = primaryThemeColor,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = snackbarData.visuals.message,
+                        style = MaterialTheme.typography.labelLarge.copy(
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.5.sp
+                        ),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
             }
         }
 
         if (showSettingsPopup) {
             val context = LocalContext.current
+            val bassStrength by viewModel.bassStrength.collectAsStateWithLifecycle()
+            val trebleStrength by viewModel.trebleStrength.collectAsStateWithLifecycle()
+            val vocalStrength by viewModel.vocalStrength.collectAsStateWithLifecycle()
+            val virtualizerStrength by viewModel.virtualizerStrength.collectAsStateWithLifecycle()
             SettingsBottomSheet(
                 isDarkTheme = isDarkTheme,
                 selectedThemeMode = themeMode,
@@ -669,23 +643,26 @@ fun MainScreen(
             )
         }
 
-        if (showCurrentQueueSheet && activeQueueSongs.isNotEmpty()) {
-            val activePlaylistName = remember(playlists, playbackState.activePlaylistId) {
-                playbackState.activePlaylistId?.let { id -> playlists.firstOrNull { it.id == id }?.name }
+        if (showCurrentQueueSheet) {
+            val activeQueueSongs by viewModel.activeQueueSongs.collectAsStateWithLifecycle()
+            if (activeQueueSongs.isNotEmpty()) {
+                val activeQueuePlaylistName = remember(playlists, playbackState.activePlaylistId) {
+                    playbackState.activePlaylistId?.let { id -> playlists.firstOrNull { it.id == id }?.name }
+                }
+                CurrentQueueBottomSheet(
+                    queueSongs = activeQueueSongs,
+                    currentSong = playbackState.currentSong,
+                    isPlaying = playbackState.isPlaying,
+                    activePlaylistName = activeQueuePlaylistName,
+                    onSelectSong = viewModel::onSelectSongFromQueue,
+                    onOpenPlayer = if (showNowPlayingScreen) {
+                        null
+                    } else {
+                        { showNowPlayingScreen = true }
+                    },
+                    onDismiss = { showCurrentQueueSheet = false }
+                )
             }
-            CurrentQueueBottomSheet(
-                queueSongs = activeQueueSongs,
-                currentSong = playbackState.currentSong,
-                isPlaying = playbackState.isPlaying,
-                activePlaylistName = activePlaylistName,
-                onSelectSong = viewModel::onSelectSongFromQueue,
-                onOpenPlayer = if (showNowPlayingScreen) {
-                    null
-                } else {
-                    { showNowPlayingScreen = true }
-                },
-                onDismiss = { showCurrentQueueSheet = false }
-            )
         }
 
         activeCarouselSheetPlaylist?.let { sheetPlaylist ->
@@ -732,9 +709,12 @@ fun MainScreen(
                     targetScale = 0.96f,
                     animationSpec = tween(180)
                 ),
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
         ) {
             if (activePlayerSong != null) {
+                val audioSpectrumProfile by viewModel.audioSpectrumProfile.collectAsStateWithLifecycle()
                 NowPlayingScreen(
                     song = activePlayerSong,
                     isPlaying = playbackState.isPlaying,
@@ -756,7 +736,229 @@ fun MainScreen(
                 )
             }
         }
+
+        // Màn hình tải trước toàn bộ ứng dụng khi mới mở app (App Preload Screen):
+        // Giữ nguyên cho đến khi nạp xong dữ liệu, khởi tạo bộ nhớ đệm và dựng sẵn cả 2 trang + thanh điều hướng,
+        // sau đó làm mờ nhẹ nhàng (fade-out) để lộ giao diện chính.
+        AnimatedVisibility(
+            visible = !hasCompletedAppPreload,
+            enter = fadeIn(animationSpec = tween(durationMillis = 120)),
+            exit = fadeOut(animationSpec = tween(durationMillis = 260, easing = FastOutSlowInEasing)),
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(20f)
+        ) {
+            AppPreloadScreen(modifier = Modifier.fillMaxSize())
+        }
     }
+    }
+}
+
+private val ALL_MAIN_TABS_MASK =
+    (1 shl MainTab.SONGS.ordinal) or
+        (1 shl MainTab.PLAYLISTS.ordinal)
+
+/**
+ * Màn hình tải trước toàn bộ ứng dụng khi mới mở app (App Preload Screen):
+ * - Chiếm toàn màn hình trên nền Surface mặc định của app.
+ * - Chỉ đặt duy nhất 1 biểu tượng tải trang chuẩn Material Design 3 của Google (MD3 Loading Indicator)
+ *   nằm chính giữa màn hình (căn giữa tuyệt đối cả chiều ngang và chiều dọc), không có văn bản hay logo.
+ */
+@Composable
+internal fun AppPreloadScreen(
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        color = MaterialTheme.colorScheme.surface,
+        contentColor = MaterialTheme.colorScheme.primary,
+        modifier = modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                }
+            }
+            .testTag("app_preload_screen")
+    ) {
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            Md3LoadingIndicator(
+                testTag = "app_preload_loading_indicator"
+            )
+        }
+    }
+}
+
+/**
+ * Hai dải nền chuyển sắc mờ dần (Vertical Gradient Scrim) ở hai cạnh trên và dưới màn hình
+ * theo chuẩn hiển thị tràn viền (Edge-to-Edge) của Android và Material Design 3:
+ * - Cạnh trên (`top_edge_gradient_scrim`): Chiều cao khớp `WindowInsets.statusBars`, bắt đầu từ mép trên
+ *   với `MaterialTheme.colorScheme.background` (`alpha = 1.0f`) và trong suốt dần xuống dưới về `alpha = 0.0f`.
+ * - Cạnh dưới (`bottom_edge_gradient_scrim`): Chiều cao khớp `WindowInsets.navigationBars` (tối thiểu `28.dp`
+ *   trong khoảng `24.dp`–`32.dp` cho thiết bị dùng thanh cử chỉ mỏng), bắt đầu từ mép đáy màn hình (`alpha = 1.0f`)
+ *   và trong suốt dần hướng lên trên về `alpha = 0.0f`.
+ * - Không gắn bộ lắng nghe chạm để mọi thao tác chạm/vuốt danh sách đi xuyên qua 100%.
+ */
+@Composable
+internal fun BoxScope.EdgeToEdgeGradientScrims(
+    statusBarHeight: Dp,
+    navigationBarHeight: Dp,
+    backgroundColor: Color = MaterialTheme.colorScheme.background
+) {
+    val effectiveTopScrimHeight = if (statusBarHeight > 0.dp) statusBarHeight else 28.dp
+    val effectiveBottomScrimHeight = navigationBarHeight.coerceAtLeast(28.dp)
+
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopCenter)
+            .fillMaxWidth()
+            .height(effectiveTopScrimHeight)
+            .zIndex(1f)
+            .drawBehind {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            backgroundColor.copy(alpha = 1.0f),
+                            backgroundColor.copy(alpha = 0.0f)
+                        ),
+                        startY = 0f,
+                        endY = size.height
+                    )
+                )
+            }
+            .testTag("top_edge_gradient_scrim")
+    )
+
+    Box(
+        modifier = Modifier
+            .align(Alignment.BottomCenter)
+            .fillMaxWidth()
+            .height(effectiveBottomScrimHeight)
+            .zIndex(1f)
+            .drawBehind {
+                drawRect(
+                    brush = Brush.verticalGradient(
+                        colors = listOf(
+                            backgroundColor.copy(alpha = 0.0f),
+                            backgroundColor.copy(alpha = 1.0f)
+                        ),
+                        startY = 0f,
+                        endY = size.height
+                    )
+                )
+            }
+            .testTag("bottom_edge_gradient_scrim")
+    )
+}
+
+/**
+ * Bộ chuyển 2 trang chính giữ nguyên trạng thái (Keep-Alive) và dựng sẵn (pre-compose/pre-render)
+ * toàn bộ 2 trang ngay từ lúc khởi động:
+ * - Cả 2 trang (Bài hát, Danh sách) đều được khởi tạo và đo đạc sẵn trong bộ nhớ,
+ *   giữ nguyên `LazyListState` / `LazyGridState` / Carousel xuyên suốt vòng đời ứng dụng.
+ * - Khi chuyển trang trên Toolbar, không bao giờ hủy hay khởi tạo lại layout từ đầu,
+ *   đảm bảo chuyển trang mượt tức thì và không nháy lại loading khi dữ liệu đã có sẵn.
+ */
+@Composable
+internal fun KeepAliveMainTabHost(
+    currentTab: MainTab,
+    modifier: Modifier = Modifier,
+    isInitialDataReady: Boolean = true,
+    onAllTabsPreRendered: () -> Unit = {},
+    songsContent: @Composable () -> Unit,
+    playlistsContent: @Composable () -> Unit
+) {
+    var readyMeasuredTabsMask by remember { mutableIntStateOf(0) }
+    var lastTab by remember { mutableStateOf(currentTab) }
+    var exitingTab by remember { mutableStateOf<MainTab?>(null) }
+    var transitionDirection by remember { mutableFloatStateOf(1f) }
+    val transitionProgress = remember { Animatable(1f) }
+
+    if (isInitialDataReady && readyMeasuredTabsMask == ALL_MAIN_TABS_MASK) {
+        onAllTabsPreRendered()
+    }
+
+    LaunchedEffect(readyMeasuredTabsMask, isInitialDataReady) {
+        if (isInitialDataReady && readyMeasuredTabsMask == ALL_MAIN_TABS_MASK) {
+            onAllTabsPreRendered()
+        }
+    }
+
+    LaunchedEffect(currentTab) {
+        if (lastTab != currentTab) {
+            exitingTab = lastTab
+            transitionDirection = if (currentTab.ordinal > lastTab.ordinal) 1f else -1f
+            lastTab = currentTab
+            transitionProgress.snapTo(0f)
+            transitionProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(
+                    durationMillis = 220,
+                    easing = FastOutSlowInEasing
+                )
+            )
+            exitingTab = null
+        }
+    }
+
+    Box(modifier = modifier) {
+        MainTab.entries.forEach { tab ->
+            val tabBit = 1 shl tab.ordinal
+            val isCurrent = tab == currentTab
+            val isExiting = tab == exitingTab && exitingTab != currentTab
+            val shouldPlace = isCurrent || isExiting
+            val needsPrewarmMeasure = isInitialDataReady && (readyMeasuredTabsMask and tabBit) == 0
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .layout { measurable, constraints ->
+                        if (!shouldPlace && !needsPrewarmMeasure) {
+                            layout(0, 0) {}
+                        } else {
+                            val placeable = measurable.measure(constraints)
+                            if (needsPrewarmMeasure) {
+                                readyMeasuredTabsMask = readyMeasuredTabsMask or tabBit
+                            }
+                            if (!shouldPlace) {
+                                layout(0, 0) {}
+                            } else {
+                                layout(placeable.width, placeable.height) {
+                                    placeable.placeWithLayer(0, 0) {
+                                        val t = transitionProgress.value.coerceIn(0f, 1f)
+                                        if (isCurrent) {
+                                            if (exitingTab != null && t < 0.999f) {
+                                                alpha = (t / 0.72f).coerceIn(0f, 1f)
+                                                translationX = (1f - t) * placeable.width * 0.08f * transitionDirection
+                                                scaleX = 1f
+                                                scaleY = 1f
+                                            } else {
+                                                alpha = 1f
+                                                translationX = 0f
+                                                scaleX = 1f
+                                                scaleY = 1f
+                                            }
+                                        } else {
+                                            alpha = (1f - t / 0.55f).coerceIn(0f, 1f)
+                                            translationX = -t * placeable.width * 0.06f * transitionDirection
+                                            scaleX = 1f
+                                            scaleY = 1f
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+            ) {
+                when (tab) {
+                    MainTab.SONGS -> songsContent()
+                    MainTab.PLAYLISTS -> playlistsContent()
+                }
+            }
+        }
     }
 }
 
@@ -778,24 +980,18 @@ private fun EmptySongsState(modifier: Modifier = Modifier) {
 }
 
 @Composable
-private fun ScanningState(modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        CircularProgressIndicator(
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(48.dp)
-        )
-        Spacer(modifier = Modifier.height(20.dp))
-        Text(
-            text = stringResource(R.string.scanning_songs),
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
-        )
-    }
+private fun ScanningState(
+    contentTopPadding: Dp = 0.dp,
+    contentBottomPadding: Dp = 0.dp,
+    modifier: Modifier = Modifier
+) {
+    PageContentLoadingBox(
+        testTag = "songs_page_loading",
+        indicatorTestTag = "songs_page_loading_indicator",
+        contentTopPadding = contentTopPadding,
+        contentBottomPadding = contentBottomPadding,
+        modifier = modifier
+    )
 }
 
 @Composable

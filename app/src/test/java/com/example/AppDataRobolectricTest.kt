@@ -5,27 +5,15 @@ import android.content.Context
 import android.net.Uri
 import androidx.room.Room
 import androidx.test.core.app.ApplicationProvider
-import com.example.data.CleanedTrackMetadata
-import com.example.data.Id3v2LyricsExtractor
-import com.example.data.LrcLibRemoteClient
-import com.example.data.LyricsRepository
-import com.example.data.OfflineSpeechLyricsEngine
 import com.example.data.PlaylistRepository
-import com.example.data.RemoteLyricsResponse
 import com.example.data.analyzePcmSamplesToProfile
 import com.example.data.local.AppDatabase
-import com.example.model.LyricLine
-import com.example.model.LyricsSource
-import com.example.model.LyricsUiState
 import com.example.model.PlayMode
 import com.example.model.Song
-import com.example.model.calculateLineProgress
 import com.example.service.PlaybackManager
 import com.example.ui.MainViewModel
 import com.example.ui.theme.AppLanguage
 import com.example.ui.theme.ThemeMode
-import java.io.ByteArrayInputStream
-import java.io.File
 import kotlin.math.PI
 import kotlin.math.sin
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -307,246 +295,6 @@ class AppDataRobolectricTest {
     }
 
     @Test
-    fun `three tier hybrid lyrics pipeline extracts ID3v2 USLT and LRCLIB synced lyrics and offline AI fallback and caches in Room`() = runBlocking {
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
-        val dao = db.lyricsCacheDao()
-
-        try {
-            // 1. Verify filename cleaner strips noise tags like _ [320kbps] (Official MV)
-            val (cleanTitle, cleanArtist) = LyricsRepository.parseTitleAndArtistFromFileName(
-                "Son_Tung_MTP - Con_Mua_Ngang_Qua [320kbps] (Official MV).mp3"
-            )
-            assertEquals("Con Mua Ngang Qua", cleanTitle)
-            assertEquals("Son Tung MTP", cleanArtist)
-
-            // 2. Verify Tier 1 ID3v2 binary USLT extraction
-            val rawId3Tag = Id3v2LyricsExtractor.buildTestId3v2TagWithUslt(
-                "[00:05.00] Câu hát mở đầu từ thẻ ID3\n[00:10.00] Câu hát thứ hai nối tiếp"
-            )
-            val extractedId3 = Id3v2LyricsExtractor.extractFromStream(
-                ByteArrayInputStream(rawId3Tag),
-                totalDurationMs = 60_000L
-            )
-            assertTrue(extractedId3 != null && extractedId3.isSynced)
-            assertEquals(2, extractedId3!!.lines.size)
-            assertEquals(5_000L, extractedId3.lines[0].startTimeMs)
-            assertEquals(10_000L, extractedId3.lines[0].endTimeMs)
-            assertEquals(10_000L, extractedId3.lines[1].startTimeMs)
-            assertEquals(60_000L, extractedId3.lines[1].endTimeMs)
-
-            val tempMp3 = File(context.cacheDir, "test_embedded_id3.mp3")
-            tempMp3.writeBytes(rawId3Tag)
-            val songTier1 = Song(
-                id = 501L,
-                title = "Bai_Hat_ID3.mp3",
-                uri = Uri.fromFile(tempMp3),
-                duration = 60_000L,
-                dateAdded = 1L,
-                path = tempMp3.absolutePath
-            )
-
-            var remoteCallCount = 0
-            val fakeRemote = LrcLibRemoteClient { _ ->
-                remoteCallCount++
-                RemoteLyricsResponse(
-                    syncedLyrics = "[00:02.00] Dòng một từ LRCLIB\n[00:08.50] Dòng hai từ LRCLIB\n[00:15.00] Dòng cuối từ LRCLIB",
-                    plainLyrics = null
-                )
-            }
-            val offlineEngine = OfflineSpeechLyricsEngine(context)
-            val repo = LyricsRepository(context, dao, offlineEngine, fakeRemote)
-
-            // Load songTier1 -> hits Tier 1 (ID3_TAG) without calling LRCLIB
-            repo.loadLyricsForSong(songTier1)
-            val stateTier1 = repo.uiState.value as LyricsUiState.Success
-            assertEquals(LyricsSource.ID3_TAG, stateTier1.source)
-            assertTrue(stateTier1.isSynced)
-            assertEquals(2, stateTier1.lines.size)
-            assertEquals(0, remoteCallCount)
-
-            // Load songTier2 (no embedded ID3 file) -> hits Tier 2 (LRCLIB) and saves to Room cache
-            val songTier2 = Song(
-                id = 502L,
-                title = "Nghe_Si_A - Bai_Ca_Hy_Vong_[320kbps]_(Official_MV).mp3",
-                uri = Uri.parse("content://media/external/audio/media/502"),
-                duration = 30_000L,
-                dateAdded = 2L
-            )
-            repo.loadLyricsForSong(songTier2)
-            val stateTier2 = repo.uiState.value as LyricsUiState.Success
-            assertEquals(LyricsSource.LRCLIB, stateTier2.source)
-            assertEquals(1, remoteCallCount)
-            assertEquals(3, stateTier2.lines.size)
-            assertEquals(2_000L, stateTier2.lines[0].startTimeMs)
-            assertEquals(8_500L, stateTier2.lines[0].endTimeMs)
-            assertEquals(8_500L, stateTier2.lines[1].startTimeMs)
-            assertEquals(15_000L, stateTier2.lines[1].endTimeMs)
-            assertEquals(15_000L, stateTier2.lines[2].startTimeMs)
-            assertEquals(30_000L, stateTier2.lines[2].endTimeMs)
-
-            // Priority 0 Cache check: new repository instance loads songTier2 immediately from Room DB without calling LRCLIB again
-            val repoFromCache = LyricsRepository(context, dao, offlineEngine, fakeRemote)
-            repoFromCache.loadLyricsForSong(songTier2)
-            val cachedState = repoFromCache.uiState.value as LyricsUiState.Success
-            assertTrue(cachedState.fromCache)
-            assertEquals(1, remoteCallCount)
-            assertEquals(3, cachedState.lines.size)
-
-            // Rescan clears cache for songTier2 and fetches fresh from Tier 2
-            repoFromCache.rescanLyrics(songTier2)
-            assertEquals(2, remoteCallCount)
-
-            // Tier 3 Offline AI Speech-to-Text when LRCLIB returns null
-            val failingRemote = LrcLibRemoteClient { null }
-            offlineEngine.setModelDownloadedForTesting(false)
-            val repoTier3 = LyricsRepository(context, dao, offlineEngine, failingRemote)
-            val songTier3 = Song(
-                id = 503L,
-                title = "Ban_Thu_Am_Rieng_Remix.mp3",
-                uri = Uri.parse("content://media/external/audio/media/503"),
-                duration = 45_000L,
-                dateAdded = 3L
-            )
-
-            // When offline model is not yet downloaded, returns Error with requiresOfflineModelDownload = true
-            repoTier3.loadLyricsForSong(songTier3)
-            val missingModelState = repoTier3.uiState.value as LyricsUiState.Error
-            assertTrue(missingModelState.requiresOfflineModelDownload)
-
-            // Once model is downloaded, Tier 3 transcribes audio and caches with AI_OFFLINE source
-            offlineEngine.setModelDownloadedForTesting(true)
-            repoTier3.rescanLyrics(songTier3)
-            val stateTier3 = repoTier3.uiState.value as LyricsUiState.Success
-            assertEquals(LyricsSource.AI_OFFLINE, stateTier3.source)
-            assertTrue(stateTier3.isSynced)
-            assertTrue(stateTier3.lines.isNotEmpty())
-            tempMp3.delete()
-            Unit
-        } finally {
-            db.close()
-        }
-    }
-
-    @Test
-    fun `lyrics parser handles offset tags and enhanced word timestamps with calibrated pause clamping`() {
-        val enhancedLrc = """
-            [offset:+500]
-            [00:10.00] <00:10.00>Một <00:11.00>hai <00:13.00>ba
-            [00:30.00] Câu tiếp theo sau đoạn nghỉ dài
-        """.trimIndent()
-
-        val parsed = Id3v2LyricsExtractor.parseLrcText(enhancedLrc, totalDurationMs = 38_000L)
-        assertEquals(2, parsed.size)
-
-        // Positive offset +500 shifts timestamps earlier by 500ms (10_000 - 500 = 9_500)
-        assertEquals(9_500L, parsed[0].startTimeMs)
-        assertEquals("Một hai ba", parsed[0].text)
-        assertEquals(3, parsed[0].segments.size)
-        assertEquals(9_500L, parsed[0].segments[0].startTimeMs)
-        assertEquals(10_500L, parsed[0].segments[1].startTimeMs)
-        assertEquals(12_500L, parsed[0].segments[2].startTimeMs)
-
-        // Word-level segment interpolation tracks exact word progress instead of stretching across the 20s gap
-        val atWordTwoStart = calculateLineProgress(10_500L, parsed[0], calibrateLongPause = true)
-        assertTrue(atWordTwoStart in 0.25f..0.45f)
-
-        val afterLastWordSung = calculateLineProgress(15_500L, parsed[0], calibrateLongPause = true)
-        assertEquals(1.0f, afterLastWordSung, 0.001f)
-
-        // Unsegmented line with long pause (> 9.5s) clamps effective vocal span reasonably instead of dragging over 20s
-        val plainLongGapLine = LyricLine(0, 0L, 25_000L, "Câu hát ngắn rồi nghỉ nhạc dài")
-        val progressAt7s = calculateLineProgress(7_000L, plainLongGapLine, calibrateLongPause = true)
-        assertTrue(progressAt7s > 0.75f)
-    }
-
-    @Test
-    fun `lyrics extractor skips instrumental and credit sections while capping vocal endTimeMs and repository handles Vietnamese filenames`() {
-        val rawLrcWithInstrumentals = """
-            [00:00.50] Sáng tác: Nhạc Sĩ Trẻ
-            [00:02.00] Ca sĩ: Ca Sĩ A
-            [00:03.50] (Nhạc dạo mở đầu)
-            [00:06.00] Câu hát đầu tiên ngân vang giữa đêm
-            [00:11.00] [Giang tấu]
-            [00:16.00] ♪ ♫ ♪
-            [00:20.00] Câu hát thứ hai tiếp nối cảm xúc (Nhạc dạo)
-            [00:26.00]
-            [00:30.00] Câu hát kết thúc bài ca
-            [00:35.00] [Outro]
-        """.trimIndent()
-
-        val parsedLines = Id3v2LyricsExtractor.parseLrcText(rawLrcWithInstrumentals, totalDurationMs = 42_000L)
-
-        // Only the 3 real vocal lines are kept; credits, instrumental markers, musical notes, and blank timestamps are skipped
-        assertEquals(3, parsedLines.size)
-        assertEquals("Câu hát đầu tiên ngân vang giữa đêm", parsedLines[0].text)
-        assertEquals("Câu hát thứ hai tiếp nối cảm xúc", parsedLines[1].text)
-        assertEquals("Câu hát kết thúc bài ca", parsedLines[2].text)
-
-        // Instrumental/blank markers at 11.00s, 26.00s, and 35.00s cap the endTimeMs of the preceding vocal lines
-        assertEquals(6_000L, parsedLines[0].startTimeMs)
-        assertEquals(11_000L, parsedLines[0].endTimeMs)
-
-        assertEquals(20_000L, parsedLines[1].startTimeMs)
-        assertEquals(26_000L, parsedLines[1].endTimeMs)
-
-        assertEquals(30_000L, parsedLines[2].startTimeMs)
-        assertEquals(35_000L, parsedLines[2].endTimeMs)
-
-        // During the instrumental break at 15_000ms, line 0 stays 100% colored and line 1 is 0%
-        assertEquals(1.0f, calculateLineProgress(15_000L, parsedLines[0]), 0.001f)
-        assertEquals(0.0f, calculateLineProgress(15_000L, parsedLines[1]), 0.001f)
-
-        // Hyphenated slug and bidirectional "Bài hát - Ca sĩ" filenames generate accurate search candidates
-        val context = ApplicationProvider.getApplicationContext<Context>()
-        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
-            .allowMainThreadQueries()
-            .build()
-        try {
-            var capturedMetadata: CleanedTrackMetadata? = null
-            val fakeRemote = LrcLibRemoteClient { metadata ->
-                capturedMetadata = metadata
-                RemoteLyricsResponse(
-                    syncedLyrics = rawLrcWithInstrumentals,
-                    plainLyrics = null
-                )
-            }
-            val repo = LyricsRepository(
-                context = context,
-                lyricsCacheDao = db.lyricsCacheDao(),
-                offlineEngine = OfflineSpeechLyricsEngine(context),
-                remoteClient = fakeRemote
-            )
-
-            val hyphenSong = Song(
-                id = 777L,
-                title = "Cat-Doi-Noi-Sau - Tang-Duy-Tan (Official Remix 320kbps).mp3",
-                uri = Uri.parse("content://media/external/audio/media/777"),
-                duration = 42_000L,
-                dateAdded = 1L
-            )
-
-            runBlocking {
-                repo.loadLyricsForSong(hyphenSong)
-            }
-
-            assertTrue(capturedMetadata != null)
-            val candidateTitles = capturedMetadata!!.candidatePairs.map { pair -> pair.first }
-            // Bidirectional candidates include both "Cat Doi Noi Sau" and "Tang Duy Tan"
-            assertTrue(candidateTitles.any { it.contains("Cat Doi Noi Sau", ignoreCase = true) })
-            assertTrue(candidateTitles.any { it.contains("Tang Duy Tan", ignoreCase = true) })
-
-            val state = repo.uiState.value as LyricsUiState.Success
-            assertEquals(3, state.lines.size)
-            assertEquals("Câu hát đầu tiên ngân vang giữa đêm", state.lines[0].text)
-        } finally {
-            db.close()
-        }
-    }
-
-    @Test
     fun `SongAudioAnalyzer separates bass treble silence and real beat onset accurately`() {
         val sampleRate = 44_100
 
@@ -594,10 +342,13 @@ class AppDataRobolectricTest {
     @Test
     fun `SPHERE_CLOUD_BUFFERS keeps all 3D sphere particles compact within unit radius without scattered dispersion`() {
         val buffers = com.example.ui.SPHERE_CLOUD_BUFFERS
-        assertEquals(1020, buffers.count)
+        assertEquals(1860, buffers.count)
+        assertEquals(1860, buffers.sin3Az.size)
+        assertEquals(1860, buffers.quadrupole.size)
         for (i in 0 until buffers.count) {
             val r = buffers.baseR[i]
             assertTrue("Particle $i has dispersed radius $r > 1.0f", r in 0.60f..1.0001f)
+            assertTrue("Particle $i sizeWeight ${buffers.sizeWeight[i]} out of compact micro-dot range", buffers.sizeWeight[i] in 0.40f..1.30f)
         }
     }
 
@@ -626,6 +377,72 @@ class AppDataRobolectricTest {
             }
         } finally {
             sqliteDb.close()
+        }
+    }
+
+    @Test
+    fun `reordering playlist songs persists position and updates live PlaybackManager queue without interrupting active song`() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, AppDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val manager = PlaybackManager.getInstance(context)
+        try {
+            val repo = PlaylistRepository(db.playlistDao())
+            val song1 = Song(101L, "one.mp3", Uri.parse("content://media/101"), 120_000L, 1L)
+            val song2 = Song(102L, "two.mp3", Uri.parse("content://media/102"), 150_000L, 2L)
+            val song3 = Song(103L, "three.mp3", Uri.parse("content://media/103"), 180_000L, 3L)
+            val librarySongs = listOf(song1, song2, song3)
+            val songsFlow = MutableStateFlow(librarySongs)
+            manager.setSongs(librarySongs)
+
+            while (manager.playbackState.value.playMode != PlayMode.REPEAT_ALL) {
+                manager.cyclePlayMode()
+            }
+
+            val playlistId = repo.createPlaylist("Mix")
+            repo.addSongsToPlaylist(playlistId, listOf(song1.id, song2.id, song3.id))
+
+            val initial = repo.observePlaylistsWithSongs(songsFlow)
+                .first { it.firstOrNull()?.songs?.size == 3 }
+            assertEquals(listOf(101L, 102L, 103L), initial.first().songs.map { it.id })
+
+            // Start playing song2 (index 1) and seek/advance to 42_500ms
+            manager.playSongFromPlaylist(playlistId, initial.first().songs, song2)
+            manager.updateProgress(42_500L, 150_000L)
+            assertEquals(102L, manager.playbackState.value.currentSong?.id)
+            assertTrue(manager.playbackState.value.isPlaying)
+            assertEquals(42_500L, manager.currentPositionMs.value)
+
+            // Reorder playlist to [song3, song1, song2]
+            val reordered = listOf(song3, song1, song2)
+            manager.reorderActivePlaylistSongs(playlistId, reordered)
+            repo.reorderPlaylistSongs(playlistId, reordered.map { it.id })
+
+            // 1. Live queue updates immediately AND active song continues seamlessly at exact 42_500ms
+            assertEquals(listOf(103L, 101L, 102L), manager.getOrderedSongs().map { it.id })
+            assertEquals(listOf(103L, 101L, 102L), manager.orderedSongs.value.map { it.id })
+            assertEquals(102L, manager.playbackState.value.currentSong?.id)
+            assertTrue(manager.playbackState.value.isPlaying)
+            assertEquals(42_500L, manager.currentPositionMs.value)
+
+            // 2. Room emits persisted new order and syncPlaylists preserves playback seamlessly
+            val persisted = repo.observePlaylistsWithSongs(songsFlow)
+                .first { it.firstOrNull()?.songs?.map { s -> s.id } == listOf(103L, 101L, 102L) }
+            manager.syncPlaylists(persisted)
+            assertEquals(102L, manager.playbackState.value.currentSong?.id)
+            assertEquals(42_500L, manager.currentPositionMs.value)
+
+            // 3. Next/Previous now follow the updated queue order [song3, song1, song2]
+            manager.playNext() // from song2 (last) wraps to song3 (first)
+            assertEquals(103L, manager.playbackState.value.currentSong?.id)
+            manager.playNext() // from song3 to song1
+            assertEquals(101L, manager.playbackState.value.currentSong?.id)
+            manager.playPrevious() // back to song3
+            assertEquals(103L, manager.playbackState.value.currentSong?.id)
+        } finally {
+            manager.stopPlayback()
+            db.close()
         }
     }
 }

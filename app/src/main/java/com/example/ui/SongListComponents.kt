@@ -3,7 +3,9 @@ package com.example.ui
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -12,6 +14,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -51,6 +54,7 @@ import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -63,6 +67,7 @@ import androidx.compose.material3.carousel.HorizontalMultiBrowseCarousel
 import androidx.compose.material3.carousel.rememberCarouselState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -95,13 +100,21 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.unit.lerp as lerpDp
 import kotlin.math.PI
 import kotlin.math.sin
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.layoutId
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
@@ -111,13 +124,93 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import com.example.R
 import com.example.model.PlaybackState
 import com.example.model.Playlist
 import com.example.model.Song
 import com.example.ui.theme.LocalizedAppScope
+import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+
+/**
+ * Bộ điều phối hiệu ứng Quick-Return Floating Header dùng chung cho 2 trang (Bài hát, Danh sách):
+ * - Vuốt tay lên (`scrollDelta < 0` - cuộn xuống xem nội dung): Cụm header trôi lên đồng bộ 1:1 cùng nội dung
+ *   cho đến khi khuất hoàn toàn khỏi mép trên màn hình (`offsetPx == -maxOffsetPx`).
+ * - Vuốt tay xuống (`scrollDelta > 0` - cuộn ngược lên): Ngay khi bắt đầu vuốt xuống ở bất kỳ vị trí nào trong danh sách,
+ *   cụm header trượt từ trên xuống đồng bộ 1:1 theo thao tác vuốt tay (`offsetPx` tăng dần theo `deltaY` về `0f`,
+ *   tuyệt đối không tự trượt xuống 1 lần) và nổi đè lên trên nội dung đang cuộn.
+ * - Thực thi hoàn toàn qua `graphicsLayer { translationY = ... }` trên GPU, không thay đổi `height` hay `padding` động.
+ */
+@Stable
+internal class QuickReturnHeaderState(
+    initialMaxOffsetPx: Float,
+    private val canScrollForwardProvider: () -> Boolean = { true },
+    private val canScrollBackwardProvider: () -> Boolean = { true }
+) {
+    var maxOffsetPx by mutableFloatStateOf(initialMaxOffsetPx.coerceAtLeast(1f))
+        private set
+
+    private val _offsetPx = mutableFloatStateOf(0f)
+    val offsetPx: Float
+        get() = _offsetPx.floatValue
+
+    fun updateHeaderHeightPx(heightPx: Int, topInsetPx: Float) {
+        if (heightPx <= 0) return
+        val total = (heightPx.toFloat() + topInsetPx + 12f).coerceAtLeast(1f)
+        if (abs(total - maxOffsetPx) > 0.5f) {
+            maxOffsetPx = total
+            _offsetPx.floatValue = _offsetPx.floatValue.coerceIn(-maxOffsetPx, 0f)
+        }
+    }
+
+    fun resetToVisible() {
+        _offsetPx.floatValue = 0f
+    }
+
+    fun onScrollDelta(deltaY: Float, source: NestedScrollSource = NestedScrollSource.UserInput) {
+        if (deltaY == 0f) return
+        val canScroll = canScrollForwardProvider() || canScrollBackwardProvider()
+        if (!canScroll) {
+            if (_offsetPx.floatValue != 0f) {
+                _offsetPx.floatValue = 0f
+            }
+            return
+        }
+        if (deltaY < 0f && !canScrollForwardProvider() && _offsetPx.floatValue == 0f) {
+            return
+        }
+        _offsetPx.floatValue = (_offsetPx.floatValue + deltaY).coerceIn(-maxOffsetPx, 0f)
+    }
+
+    val nestedScrollConnection: NestedScrollConnection = object : NestedScrollConnection {
+        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            onScrollDelta(available.y, source)
+            return Offset.Zero
+        }
+    }
+}
+
+@Composable
+internal fun rememberQuickReturnHeaderState(
+    defaultHeaderHeightDp: Dp = 56.dp,
+    topPaddingDp: Dp = 12.dp,
+    canScrollForwardProvider: () -> Boolean = { true },
+    canScrollBackwardProvider: () -> Boolean = { true }
+): QuickReturnHeaderState {
+    val density = LocalDensity.current
+    val initialMaxOffsetPx = with(density) { (defaultHeaderHeightDp + topPaddingDp + 8.dp).toPx() }
+    return remember(canScrollForwardProvider, canScrollBackwardProvider) {
+        QuickReturnHeaderState(
+            initialMaxOffsetPx = initialMaxOffsetPx,
+            canScrollForwardProvider = canScrollForwardProvider,
+            canScrollBackwardProvider = canScrollBackwardProvider
+        )
+    }
+}
 
 private val CAROUSEL_UNIT_GLOW_BRUSH: Brush by lazy(LazyThreadSafetyMode.PUBLICATION) {
     Brush.radialGradient(
@@ -135,13 +228,14 @@ internal fun CapsuleSearchField(
     containerTestTag: String,
     inputTestTag: String,
     clearButtonTestTag: String,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    shadowElevation: Dp = 6.dp
 ) {
     Surface(
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceContainerHigh,
-        tonalElevation = 1.dp,
-        shadowElevation = 0.dp,
+        tonalElevation = 2.dp,
+        shadowElevation = shadowElevation,
         modifier = modifier
             .height(48.dp)
             .testTag(containerTestTag)
@@ -211,6 +305,50 @@ internal fun CapsuleSearchField(
     }
 }
 
+/**
+ * Biểu tượng tải trang chuẩn Material Design 3 của Google (MD3 Loading Indicator):
+ * Tối giản tuyệt đối, không kèm văn bản hay chi tiết trang trí phụ.
+ */
+@Composable
+fun Md3LoadingIndicator(
+    modifier: Modifier = Modifier,
+    testTag: String = "md3_loading_indicator"
+) {
+    CircularProgressIndicator(
+        color = MaterialTheme.colorScheme.primary,
+        trackColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.36f),
+        strokeWidth = 4.dp,
+        strokeCap = StrokeCap.Round,
+        modifier = modifier
+            .size(48.dp)
+            .testTag(testTag)
+    )
+}
+
+/**
+ * Vùng hiển thị trạng thái đang tải độc lập cho từng trang (Per-Page Loading):
+ * Căn giữa tuyệt đối biểu tượng MD3 Loading Indicator trong vùng nội dung của trang đó,
+ * giữ nguyên các thành phần dùng chung bên ngoài trang (Toolbar 3 nút, thẻ Now Playing...).
+ */
+@Composable
+internal fun PageContentLoadingBox(
+    testTag: String,
+    indicatorTestTag: String,
+    contentTopPadding: Dp = 0.dp,
+    contentBottomPadding: Dp = 0.dp,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = modifier
+            .fillMaxSize()
+            .padding(top = contentTopPadding, bottom = contentBottomPadding)
+            .testTag(testTag)
+    ) {
+        Md3LoadingIndicator(testTag = indicatorTestTag)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun SongList(
@@ -227,6 +365,7 @@ internal fun SongList(
     contentTopPadding: Dp,
     contentBottomPadding: Dp,
     isDarkTheme: Boolean,
+    isLoading: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
@@ -258,14 +397,22 @@ internal fun SongList(
         }
     }
 
-    val animatedTopPadding by animateDpAsState(
-        targetValue = contentTopPadding,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "song_list_top_padding"
+    val quickReturnState = rememberQuickReturnHeaderState(
+        defaultHeaderHeightDp = 48.dp,
+        topPaddingDp = contentTopPadding,
+        canScrollForwardProvider = { listState.canScrollForward },
+        canScrollBackwardProvider = { listState.canScrollBackward }
     )
+    val canScrollList by remember(listState) {
+        derivedStateOf { listState.canScrollForward || listState.canScrollBackward }
+    }
+    LaunchedEffect(canScrollList) {
+        if (!canScrollList) {
+            quickReturnState.resetToVisible()
+        }
+    }
+    val density = LocalDensity.current
+    val searchHeaderReservedHeight = if (songs.isNotEmpty()) 58.dp else 0.dp
 
     Box(
         modifier = modifier
@@ -276,40 +423,65 @@ internal fun SongList(
                 }
             }
     ) {
+        if (isLoading) {
+            PageContentLoadingBox(
+                testTag = "songs_page_loading",
+                indicatorTestTag = "songs_page_loading_indicator",
+                contentTopPadding = contentTopPadding,
+                contentBottomPadding = contentBottomPadding
+            )
+            return@Box
+        }
+
         val currentSongId = playbackState.currentSong?.id
         val nonEmptyPlaylists = remember(playlists) {
             playlists.filter { it.songs.isNotEmpty() }
         }
 
+        if (songs.isNotEmpty()) {
+            val topInsetPx = with(density) { contentTopPadding.toPx() }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .zIndex(2f)
+                    .padding(top = contentTopPadding, start = 16.dp, end = 16.dp)
+                    .onSizeChanged { size ->
+                        quickReturnState.updateHeaderHeightPx(size.height, topInsetPx)
+                    }
+                    .graphicsLayer {
+                        translationY = quickReturnState.offsetPx
+                    }
+                    .testTag("songs_floating_header")
+            ) {
+                CapsuleSearchField(
+                    query = searchQuery,
+                    onQueryChange = {
+                        searchQuery = it
+                        quickReturnState.resetToVisible()
+                    },
+                    placeholderText = stringResource(R.string.search_placeholder),
+                    containerTestTag = "songs_search_bar",
+                    inputTestTag = "input_search_songs",
+                    clearButtonTestTag = "btn_clear_search_songs",
+                    shadowElevation = 6.dp,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
         LazyColumn(
             state = listState,
             contentPadding = PaddingValues(
-                top = animatedTopPadding,
+                top = contentTopPadding + searchHeaderReservedHeight,
                 bottom = contentBottomPadding
             ),
             verticalArrangement = Arrangement.spacedBy(3.dp),
             modifier = Modifier
                 .fillMaxSize()
+                .nestedScroll(quickReturnState.nestedScrollConnection)
                 .testTag("songs_lazy_column")
         ) {
-            if (songs.isNotEmpty()) {
-                item(
-                    key = "songs_search_bar",
-                    contentType = "search_bar"
-                ) {
-                    CapsuleSearchField(
-                        query = searchQuery,
-                        onQueryChange = { searchQuery = it },
-                        placeholderText = stringResource(R.string.search_placeholder),
-                        containerTestTag = "songs_search_bar",
-                        inputTestTag = "input_search_songs",
-                        clearButtonTestTag = "btn_clear_search_songs",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(start = 16.dp, end = 16.dp, bottom = 10.dp)
-                    )
-                }
-            }
 
             if (nonEmptyPlaylists.isNotEmpty()) {
                 item(
@@ -791,6 +963,10 @@ internal fun UniformSongCard(
     onDelete: (() -> Unit)? = null,
     onRemoveFromPlaylist: (() -> Unit)? = null,
     onOpenPlayer: (() -> Unit)? = null,
+    isDragged: Boolean = false,
+    showDragHandle: Boolean = false,
+    isDragHandleEnabled: Boolean = true,
+    dragHandleModifier: Modifier = Modifier,
     isDarkTheme: Boolean,
     modifier: Modifier = Modifier
 ) {
@@ -806,9 +982,22 @@ internal fun UniformSongCard(
     val emptyDraggingState = remember { mutableStateOf(false) }
     val emptyDragFracState = remember { mutableStateOf(0f) }
 
-    val cardBgColor = MaterialTheme.colorScheme.surfaceContainer
+    val baseCardBgColor = MaterialTheme.colorScheme.surfaceContainer
     val contentColor = MaterialTheme.colorScheme.onSurface
     val primaryColor = MaterialTheme.colorScheme.primary
+    val cardBgColor = if (isDragged) {
+        lerp(baseCardBgColor, primaryColor, 0.10f)
+    } else {
+        baseCardBgColor
+    }
+    val dragLiftScale by animateFloatAsState(
+        targetValue = if (isDragged) 1.022f else 1f,
+        animationSpec = spring(
+            dampingRatio = 0.68f,
+            stiffness = Spring.StiffnessMedium
+        ),
+        label = "song_card_drag_lift"
+    )
 
     val selectedCornerRadius = 18.dp
     val largeRadius = 24.dp
@@ -1045,124 +1234,169 @@ internal fun UniformSongCard(
             color = cardBgColor,
             contentColor = contentColor,
             border = null,
-            tonalElevation = 0.dp,
+            tonalElevation = if (isDragged) 3.dp else 0.dp,
             shadowElevation = 0.dp,
             modifier = Modifier
                 .weight(1f)
                 .fillMaxHeight()
                 .heightIn(min = 52.dp)
                 .graphicsLayer {
-                    scaleX = animScale.value
-                    scaleY = animScale.value
+                    val combinedScale = animScale.value * dragLiftScale
+                    scaleX = combinedScale
+                    scaleY = combinedScale
                     translationY = animTranslationY.value
                 }
                 .clip(cardShape)
         ) {
-            Box(
-                contentAlignment = Alignment.CenterStart,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .combinedClickable(
-                        interactionSource = cardInteractionSource,
-                        indication = null,
-                        onLongClick = {
-                            if (!isActionsRevealed) {
-                                onToggleActions()
-                            }
-                        },
-                        onClick = {
-                            if (isActionsRevealed) {
-                                onCloseActions()
-                            } else {
-                                onClick()
-                            }
-                        }
-                    )
+            Row(
+                modifier = Modifier.fillMaxSize(),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
+                Box(
+                    contentAlignment = Alignment.CenterStart,
                     modifier = Modifier
-                        .fillMaxWidth()
+                        .weight(1f)
                         .fillMaxHeight()
-                        .padding(start = 10.dp, end = 12.dp, top = 10.dp, bottom = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                        .combinedClickable(
+                            interactionSource = cardInteractionSource,
+                            indication = null,
+                            onLongClick = {
+                                if (!isDragged && !isActionsRevealed) {
+                                    onToggleActions()
+                                }
+                            },
+                            onClick = {
+                                if (!isDragged) {
+                                    if (isActionsRevealed) {
+                                        onCloseActions()
+                                    } else {
+                                        onClick()
+                                    }
+                                }
+                            }
+                        )
                 ) {
-                    if (leftIconWidth.value > 0.5f && leftIconAlpha > 0.01f) {
-                        Box(
-                            modifier = Modifier
-                                .width(leftIconWidth)
-                                .graphicsLayer {
-                                    translationX = leftIconOffsetX.toPx()
-                                    alpha = leftIconAlpha
-                                },
-                            contentAlignment = Alignment.Center
-                        ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .fillMaxHeight()
+                            .padding(
+                                start = 10.dp,
+                                end = if (showDragHandle && !isActionsRevealed) 4.dp else 12.dp,
+                                top = 10.dp,
+                                bottom = 10.dp
+                            ),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (leftIconWidth.value > 0.5f && leftIconAlpha > 0.01f) {
                             Box(
                                 modifier = Modifier
-                                    .width(22.dp)
-                                    .height(22.dp)
-                                    .testTag("song_index_${song.id}"),
+                                    .width(leftIconWidth)
+                                    .graphicsLayer {
+                                        translationX = leftIconOffsetX.toPx()
+                                        alpha = leftIconAlpha
+                                    },
                                 contentAlignment = Alignment.Center
                             ) {
-                                if (isHighlighted) {
-                                    AudioWaveformEqualizer(
-                                        isPlaying = isPlaying,
-                                        tint = primaryColor,
-                                        modifier = Modifier
-                                            .size(width = 16.dp, height = 14.dp)
-                                            .testTag("song_equalizer_${song.id}")
-                                    )
-                                } else {
-                                    Text(
-                                        text = "$songIndex",
-                                        style = MaterialTheme.typography.bodySmall.copy(
-                                            fontWeight = FontWeight.Medium,
-                                            fontSize = 13.sp,
-                                            fontFeatureSettings = "tnum"
-                                        ),
-                                        color = contentColor.copy(alpha = 0.58f),
-                                        maxLines = 1
-                                    )
+                                Box(
+                                    modifier = Modifier
+                                        .width(22.dp)
+                                        .height(22.dp)
+                                        .testTag("song_index_${song.id}"),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    if (isHighlighted) {
+                                        AudioWaveformEqualizer(
+                                            isPlaying = isPlaying,
+                                            tint = primaryColor,
+                                            modifier = Modifier
+                                                .size(width = 16.dp, height = 14.dp)
+                                                .testTag("song_equalizer_${song.id}")
+                                        )
+                                    } else {
+                                        Text(
+                                            text = "$songIndex",
+                                            style = MaterialTheme.typography.bodySmall.copy(
+                                                fontWeight = FontWeight.Medium,
+                                                fontSize = 13.sp,
+                                                fontFeatureSettings = "tnum"
+                                            ),
+                                            color = contentColor.copy(alpha = 0.58f),
+                                            maxLines = 1
+                                        )
+                                    }
                                 }
                             }
                         }
+
+                        if (leftSpacerWidth.value > 0.5f) {
+                            Spacer(modifier = Modifier.width(leftSpacerWidth))
+                        }
+
+                        Text(
+                            text = song.displayTitle,
+                            style = MaterialTheme.typography.bodyLarge.copy(
+                                fontWeight = if (isHighlighted) FontWeight.SemiBold else FontWeight.Normal,
+                                fontSize = 15.sp
+                            ),
+                            color = if (isHighlighted) primaryColor else contentColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f)
+                        )
+
+                        if (!isActionsRevealed) {
+                            Spacer(modifier = Modifier.width(6.dp))
+                            if (isHighlighted && onOpenPlayer != null) {
+                                SelectedSongOpenPlayerButton(
+                                    onClick = onOpenPlayer,
+                                    tint = primaryColor,
+                                    containerColor = primaryColor.copy(alpha = 0.14f),
+                                    modifier = Modifier.testTag("btn_open_player_${song.id}")
+                                )
+                            } else {
+                                SongCardTimeDisplay(
+                                    isActive = false,
+                                    currentPositionMsFlow = null,
+                                    durationMs = song.duration,
+                                    isDraggingState = emptyDraggingState,
+                                    dragFractionState = emptyDragFracState,
+                                    contentColor = contentColor,
+                                    isDarkTheme = isDarkTheme,
+                                    waveSyncState = null
+                                )
+                            }
+                        }
                     }
+                }
 
-                    if (leftSpacerWidth.value > 0.5f) {
-                        Spacer(modifier = Modifier.width(leftSpacerWidth))
+                // Vùng nút kéo 4 chấm (2x2) tách biệt rạch ròi bên phải, hoàn toàn không xung đột cảm ứng với thân thẻ
+                if (showDragHandle && !isActionsRevealed) {
+                    val dragDesc = stringResource(R.string.cd_reorder_song_in_playlist)
+                    val dotColor = if (isDragged) {
+                        primaryColor
+                    } else {
+                        contentColor.copy(alpha = if (isDragHandleEnabled) 0.54f else 0.24f)
                     }
-
-                    Text(
-                        text = song.displayTitle,
-                        style = MaterialTheme.typography.bodyLarge.copy(
-                            fontWeight = if (isHighlighted) FontWeight.SemiBold else FontWeight.Normal,
-                            fontSize = 15.sp
-                        ),
-                        color = if (isHighlighted) primaryColor else contentColor,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f)
-                    )
-
-                    if (!isActionsRevealed) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        if (isHighlighted && onOpenPlayer != null) {
-                            SelectedSongOpenPlayerButton(
-                                onClick = onOpenPlayer,
-                                tint = primaryColor,
-                                containerColor = primaryColor.copy(alpha = 0.14f),
-                                modifier = Modifier.testTag("btn_open_player_${song.id}")
-                            )
-                        } else {
-                            SongCardTimeDisplay(
-                                isActive = false,
-                                currentPositionMsFlow = null,
-                                durationMs = song.duration,
-                                isDraggingState = emptyDraggingState,
-                                dragFractionState = emptyDragFracState,
-                                contentColor = contentColor,
-                                isDarkTheme = isDarkTheme,
-                                waveSyncState = null
-                            )
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .width(48.dp)
+                            .fillMaxHeight()
+                            .padding(end = 4.dp)
+                            .semantics { contentDescription = dragDesc }
+                            .testTag("btn_drag_song_${song.id}")
+                            .then(dragHandleModifier)
+                    ) {
+                        Canvas(modifier = Modifier.size(18.dp)) {
+                            val cx = size.width * 0.5f
+                            val cy = size.height * 0.5f
+                            val dotOffset = 3.1.dp.toPx()
+                            val dotRadius = 1.7.dp.toPx()
+                            drawCircle(color = dotColor, radius = dotRadius, center = Offset(cx - dotOffset, cy - dotOffset))
+                            drawCircle(color = dotColor, radius = dotRadius, center = Offset(cx + dotOffset, cy - dotOffset))
+                            drawCircle(color = dotColor, radius = dotRadius, center = Offset(cx - dotOffset, cy + dotOffset))
+                            drawCircle(color = dotColor, radius = dotRadius, center = Offset(cx + dotOffset, cy + dotOffset))
                         }
                     }
                 }

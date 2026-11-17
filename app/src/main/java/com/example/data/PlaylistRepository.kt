@@ -100,6 +100,11 @@ class PlaylistRepository(private val playlistDao: PlaylistDao) {
         playlistDao.insertPlaylistSongs(entries)
     }
 
+    suspend fun reorderPlaylistSongs(playlistId: Long, orderedSongIds: List<Long>) = withContext(Dispatchers.IO) {
+        if (orderedSongIds.isEmpty()) return@withContext
+        playlistDao.reorderPlaylistSongs(playlistId, orderedSongIds)
+    }
+
     suspend fun removeSongFromPlaylist(playlistId: Long, songId: Long) = withContext(Dispatchers.IO) {
         playlistDao.removeSongFromPlaylist(playlistId, songId)
     }

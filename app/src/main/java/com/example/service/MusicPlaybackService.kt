@@ -47,8 +47,10 @@ class MusicPlaybackService : Service(),
     private val serviceScope = CoroutineScope(Dispatchers.Main.immediate + SupervisorJob())
     private var progressJob: Job? = null
 
+    @Volatile
     private var mediaPlayer: MediaPlayer? = null
     private var prepareGeneration: Int = 0
+    @Volatile
     private var cachedPlayerDurationMs: Long = 0L
     private lateinit var playbackManager: PlaybackManager
     private var audioManager: AudioManager? = null
@@ -461,7 +463,7 @@ class MusicPlaybackService : Service(),
 
     private fun startProgressTracker() {
         stopProgressTracker()
-        progressJob = serviceScope.launch {
+        progressJob = serviceScope.launch(Dispatchers.Default) {
             while (isActive) {
                 try {
                     val mp = mediaPlayer

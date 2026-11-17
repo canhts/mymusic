@@ -5,6 +5,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -27,7 +28,6 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -36,23 +36,22 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.QueueMusic
 import androidx.compose.material.icons.filled.MusicNote
-import androidx.compose.material.icons.filled.MyLocation
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -63,11 +62,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ColorFilter
+import androidx.compose.ui.graphics.ColorProducer
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
@@ -84,22 +87,23 @@ import androidx.compose.ui.unit.dp
 import com.example.R
 import com.example.model.PlayMode
 import com.example.model.PlaybackState
+import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sin
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 enum class MainTab {
     SONGS,
-    PLAYLISTS,
-    SING
+    PLAYLISTS
 }
 
 /**
  * Cụm điều khiển & điều hướng 2 tầng cố định ở cạnh dưới màn hình:
  * - Vùng bao ngoài trong suốt sát 3 cạnh (trái, phải, đáy) chặn mọi thao tác chạm/vuốt lọt qua khe hở xuống danh sách.
  * - Tầng trên: Thẻ viên nhộng trình phát (Now-Playing Pill Capsule) khi có bài hát đang chọn.
- * - Tầng dưới: Cụm menu viên nhộng 3 trang (Bài hát, Danh sách, Hát) + nút Cài đặt tách rời bên phải.
+ * - Tầng dưới: Cụm menu viên nhộng 2 trang (Bài hát, Danh sách) + nút Cài đặt tách rời bên phải.
  */
 @Composable
 internal fun CapsuleBottomToolbar(
@@ -118,8 +122,6 @@ internal fun CapsuleBottomToolbar(
     onSeek: (Long) -> Unit,
     onOpenQueue: () -> Unit,
     onOpenSettings: () -> Unit,
-    showReturnToActiveButton: Boolean = false,
-    onReturnToActiveClick: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val navHeight = 52.dp
@@ -177,18 +179,7 @@ internal fun CapsuleBottomToolbar(
                     bottom = bottomInsetPadding + 14.dp
                 )
         ) {
-            // TẦNG TRÊN: Viên nhộng trình phát (Now-Playing Pill Capsule) + Nút tròn "Về đoạn đang hát" bám theo bên phải
-            val returnButtonProgress by animateFloatAsState(
-                targetValue = if (showReturnToActiveButton && playbackState.currentSong != null) 1f else 0f,
-                animationSpec = spring(
-                    dampingRatio = 0.50f,
-                    stiffness = Spring.StiffnessMediumLow
-                ),
-                visibilityThreshold = 0.001f,
-                label = "return_to_active_btn_spring"
-            )
-            val returnSlotFraction = returnButtonProgress.coerceAtLeast(0f)
-
+            // TẦNG TRÊN: Viên nhộng trình phát (Now-Playing Pill Capsule)
             AnimatedVisibility(
                 visible = playbackState.currentSong != null,
                 enter = fadeIn(animationSpec = tween(220)) +
@@ -205,113 +196,32 @@ internal fun CapsuleBottomToolbar(
                     scaleOut(targetScale = 0.94f)
             ) {
                 playbackState.currentSong?.let { activeSong ->
-                    BoxWithConstraints(
+                    Box(
                         contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 28.dp)
                     ) {
-                        val expandedBaseWidth = maxWidth.coerceAtMost(352.dp)
-                        val actionCircleSize = navHeight
-                        val actionCircleGap = navGap
-                        val reservedTrailingWidth = ((actionCircleSize + actionCircleGap) * returnSlotFraction)
-                            .coerceAtLeast(0.dp)
-                        val coordinatedPillWidth = (expandedBaseWidth - reservedTrailingWidth)
-                            .coerceAtLeast(144.dp)
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.Center,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            BottomNowPlayingPill(
-                                song = activeSong,
-                                activePlaylistName = activePlaylistName,
-                                isPlaying = playbackState.isPlaying,
-                                playMode = playbackState.playMode,
-                                durationMs = playbackState.durationMs,
-                                currentPositionMsFlow = currentPositionMsFlow,
-                                onTogglePlayPause = onTogglePlayPause,
-                                onCyclePlayMode = onCyclePlayMode,
-                                onSeek = onSeek,
-                                onOpenQueue = onOpenQueue,
-                                isDarkTheme = isDarkTheme,
-                                isCollapsed = if (onTogglePlayerPillCollapsed != null) isPlayerPillCollapsed else null,
-                                onToggleCollapse = onTogglePlayerPillCollapsed,
-                                expandedWidthOverrideDp = coordinatedPillWidth
-                            )
-
-                            if (showReturnToActiveButton || returnButtonProgress > 0.01f) {
-                                val currentGap = (actionCircleGap * returnSlotFraction).coerceAtLeast(0.dp)
-                                val currentSlotWidth = (actionCircleSize * returnSlotFraction).coerceAtLeast(0.dp)
-                                Spacer(modifier = Modifier.width(currentGap))
-                                Box(
-                                    contentAlignment = Alignment.Center,
-                                    modifier = Modifier
-                                        .width(currentSlotWidth)
-                                        .height(actionCircleSize)
-                                ) {
-                                    val returnSource = remember { MutableInteractionSource() }
-                                    val btnScale = returnButtonProgress.coerceIn(0f, 1.12f)
-                                    val btnAlpha = returnButtonProgress.coerceIn(0f, 1f)
-                                    Surface(
-                                        shape = CircleShape,
-                                        color = MaterialTheme.colorScheme.primaryContainer,
-                                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                                        tonalElevation = 4.dp,
-                                        shadowElevation = 0.dp,
-                                        border = null,
-                                        modifier = Modifier
-                                            .requiredSize(actionCircleSize)
-                                            .graphicsLayer {
-                                                scaleX = btnScale
-                                                scaleY = btnScale
-                                                alpha = btnAlpha
-                                            }
-                                            .radiantShadow(
-                                                color = if (isDarkTheme) {
-                                                    shadowBaseColor
-                                                } else {
-                                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                                                },
-                                                blurRadius = 14.dp,
-                                                offsetY = 3.dp,
-                                                isCircle = true
-                                            )
-                                            .bottomControlBounce(
-                                                scaleDown = 0.84f,
-                                                dipY = 2.dp,
-                                                interactionSource = returnSource
-                                            )
-                                            .clip(CircleShape)
-                                            .clickable(
-                                                enabled = showReturnToActiveButton,
-                                                interactionSource = returnSource,
-                                                indication = null,
-                                                onClick = onReturnToActiveClick
-                                            )
-                                            .testTag("btn_return_to_active_lyric")
-                                    ) {
-                                        Box(
-                                            contentAlignment = Alignment.Center,
-                                            modifier = Modifier.fillMaxSize()
-                                        ) {
-                                            Icon(
-                                                imageVector = Icons.Default.MyLocation,
-                                                contentDescription = stringResource(R.string.lyrics_return_to_active),
-                                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                                                modifier = Modifier.size(21.dp)
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        BottomNowPlayingPill(
+                            song = activeSong,
+                            activePlaylistName = activePlaylistName,
+                            isPlaying = playbackState.isPlaying,
+                            playMode = playbackState.playMode,
+                            durationMs = playbackState.durationMs,
+                            currentPositionMsFlow = currentPositionMsFlow,
+                            onTogglePlayPause = onTogglePlayPause,
+                            onCyclePlayMode = onCyclePlayMode,
+                            onSeek = onSeek,
+                            onOpenQueue = onOpenQueue,
+                            isDarkTheme = isDarkTheme,
+                            isCollapsed = if (onTogglePlayerPillCollapsed != null) isPlayerPillCollapsed else null,
+                            onToggleCollapse = onTogglePlayerPillCollapsed
+                        )
                     }
                 }
             }
 
-            // TẦNG DƯỚI: Menu viên nhộng (Bài hát / Danh sách / Hát) + Cài đặt tách rời
+            // TẦNG DƯỚI: Menu viên nhộng (Bài hát / Danh sách) + Cài đặt tách rời
             Row(
                 modifier = Modifier
                     .wrapContentWidth()
@@ -339,37 +249,58 @@ internal fun CapsuleBottomToolbar(
                     val tabBounds = remember { mutableStateMapOf<MainTab, NavTabBounds>() }
                     val indicatorLeftAnim = remember { Animatable(0f) }
                     val indicatorWidthAnim = remember { Animatable(0f) }
+                    val pillJourney = remember { NavPillJourneyState() }
                     var hasInitializedIndicator by remember { mutableStateOf(false) }
 
                     val activeTabBounds = tabBounds[currentTab]
-                    LaunchedEffect(currentTab, activeTabBounds?.leftPx, activeTabBounds?.widthPx) {
+                    LaunchedEffect(currentTab, activeTabBounds != null) {
                         val target = activeTabBounds ?: return@LaunchedEffect
                         if (!hasInitializedIndicator) {
                             indicatorLeftAnim.snapTo(target.leftPx)
                             indicatorWidthAnim.snapTo(target.widthPx)
+                            pillJourney.lastTab = currentTab
+                            pillJourney.startLeftPx = target.leftPx
+                            pillJourney.targetLeftPx = target.leftPx
+                            pillJourney.maxProgress = 1f
+                            pillJourney.isActive = false
                             hasInitializedIndicator = true
-                        } else {
-                            launch {
-                                indicatorLeftAnim.animateTo(
-                                    targetValue = target.leftPx,
-                                    initialVelocity = indicatorLeftAnim.velocity,
-                                    animationSpec = spring(
-                                        dampingRatio = 0.52f,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    )
-                                )
-                            }
-                            launch {
-                                indicatorWidthAnim.animateTo(
-                                    targetValue = target.widthPx,
-                                    initialVelocity = indicatorWidthAnim.velocity,
-                                    animationSpec = spring(
-                                        dampingRatio = 0.58f,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    )
-                                )
-                            }
                         }
+                    }
+
+                    LaunchedEffect(currentTab, activeTabBounds?.leftPx, hasInitializedIndicator) {
+                        if (!hasInitializedIndicator) return@LaunchedEffect
+                        val targetLeft = activeTabBounds?.leftPx ?: return@LaunchedEffect
+                        if (pillJourney.lastTab != currentTab) {
+                            pillJourney.lastTab = currentTab
+                            pillJourney.startLeftPx = indicatorLeftAnim.value
+                            pillJourney.targetLeftPx = targetLeft
+                            pillJourney.maxProgress = 0f
+                            pillJourney.isActive = abs(targetLeft - pillJourney.startLeftPx) > 1f
+                        } else if (pillJourney.isActive) {
+                            pillJourney.targetLeftPx = targetLeft
+                        }
+                        indicatorLeftAnim.animateTo(
+                            targetValue = targetLeft,
+                            initialVelocity = indicatorLeftAnim.velocity,
+                            animationSpec = spring(
+                                dampingRatio = NAV_PILL_SPRING_DAMPING,
+                                stiffness = NAV_PILL_SPRING_STIFFNESS
+                            )
+                        )
+                        pillJourney.isActive = false
+                    }
+
+                    LaunchedEffect(currentTab, activeTabBounds?.widthPx, hasInitializedIndicator) {
+                        if (!hasInitializedIndicator) return@LaunchedEffect
+                        val targetWidth = activeTabBounds?.widthPx ?: return@LaunchedEffect
+                        indicatorWidthAnim.animateTo(
+                            targetValue = targetWidth,
+                            initialVelocity = indicatorWidthAnim.velocity,
+                            animationSpec = spring(
+                                dampingRatio = NAV_PILL_SPRING_DAMPING,
+                                stiffness = NAV_PILL_SPRING_STIFFNESS
+                            )
+                        )
                     }
 
                     val updateTabBounds: (MainTab, Float, Float) -> Unit = remember {
@@ -451,10 +382,24 @@ internal fun CapsuleBottomToolbar(
                                         }
                                     }
                                     .graphicsLayer {
-                                        val speed = if (hasInitializedIndicator) abs(indicatorLeftAnim.velocity) else 0f
-                                        val travelStretch = (speed / 5500f).coerceIn(0f, 0.08f)
-                                        scaleX = 1f + travelStretch
-                                        scaleY = 1f - travelStretch * 0.40f
+                                        val pillScale = if (hasInitializedIndicator && pillJourney.isActive) {
+                                            val span = pillJourney.targetLeftPx - pillJourney.startLeftPx
+                                            if (abs(span) > 1f) {
+                                                val rawProgress = ((indicatorLeftAnim.value - pillJourney.startLeftPx) / span)
+                                                    .coerceIn(0f, 1f)
+                                                val progress = maxOf(pillJourney.maxProgress, rawProgress)
+                                                if (progress > pillJourney.maxProgress) {
+                                                    pillJourney.maxProgress = progress
+                                                }
+                                                1f + NAV_PILL_TRAVEL_PEAK_SCALE_BOOST * sin(PI * progress).toFloat()
+                                            } else {
+                                                1f
+                                            }
+                                        } else {
+                                            1f
+                                        }
+                                        scaleX = pillScale
+                                        scaleY = pillScale
                                     }
                                     .background(
                                         color = activePillColor,
@@ -466,21 +411,20 @@ internal fun CapsuleBottomToolbar(
                         }
 
                         Row(
-                            modifier = Modifier
-                                .fillMaxHeight()
-                                .animateContentSize(
-                                    animationSpec = spring(
-                                        dampingRatio = 0.62f,
-                                        stiffness = Spring.StiffnessMediumLow
-                                    )
-                                ),
+                            modifier = Modifier.fillMaxHeight(),
                             horizontalArrangement = Arrangement.spacedBy(4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             NavPillTabItem(
+                                tab = MainTab.SONGS,
+                                currentTab = currentTab,
                                 label = stringResource(R.string.nav_tab_songs),
                                 icon = Icons.Default.MusicNote,
                                 selected = currentTab == MainTab.SONGS,
+                                tabBoundsProvider = { tabBounds[MainTab.SONGS] },
+                                indicatorLeftProvider = { indicatorLeftAnim.value },
+                                indicatorWidthProvider = { indicatorWidthAnim.value },
+                                isIndicatorInitializedProvider = { hasInitializedIndicator },
                                 onBoundsChanged = { leftPx, widthPx ->
                                     updateTabBounds(MainTab.SONGS, leftPx, widthPx)
                                 },
@@ -490,27 +434,21 @@ internal fun CapsuleBottomToolbar(
                             )
 
                             NavPillTabItem(
+                                tab = MainTab.PLAYLISTS,
+                                currentTab = currentTab,
                                 label = stringResource(R.string.nav_tab_playlists),
                                 icon = Icons.AutoMirrored.Filled.QueueMusic,
                                 selected = currentTab == MainTab.PLAYLISTS,
+                                tabBoundsProvider = { tabBounds[MainTab.PLAYLISTS] },
+                                indicatorLeftProvider = { indicatorLeftAnim.value },
+                                indicatorWidthProvider = { indicatorWidthAnim.value },
+                                isIndicatorInitializedProvider = { hasInitializedIndicator },
                                 onBoundsChanged = { leftPx, widthPx ->
                                     updateTabBounds(MainTab.PLAYLISTS, leftPx, widthPx)
                                 },
                                 onClick = { onSelectTab(MainTab.PLAYLISTS) },
                                 testTag = "nav_tab_playlists",
                                 iconTestTag = "nav_tab_icon_playlists"
-                            )
-
-                            NavPillTabItem(
-                                label = stringResource(R.string.nav_tab_sing),
-                                icon = Icons.Rounded.Mic,
-                                selected = currentTab == MainTab.SING,
-                                onBoundsChanged = { leftPx, widthPx ->
-                                    updateTabBounds(MainTab.SING, leftPx, widthPx)
-                                },
-                                onClick = { onSelectTab(MainTab.SING) },
-                                testTag = "nav_tab_sing",
-                                iconTestTag = "nav_tab_icon_sing"
                             )
                         }
                     }
@@ -579,6 +517,18 @@ internal fun CapsuleBottomToolbar(
     }
 }
 
+private const val NAV_PILL_SPRING_DAMPING = 0.52f
+private const val NAV_PILL_SPRING_STIFFNESS = Spring.StiffnessMediumLow
+private const val NAV_PILL_TRAVEL_PEAK_SCALE_BOOST = 0.12f
+
+private class NavPillJourneyState {
+    var lastTab: MainTab? = null
+    var startLeftPx: Float = 0f
+    var targetLeftPx: Float = 0f
+    var maxProgress: Float = 0f
+    var isActive: Boolean = false
+}
+
 private data class NavTabBounds(
     val leftPx: Float,
     val widthPx: Float
@@ -586,50 +536,78 @@ private data class NavTabBounds(
 
 @Composable
 private fun NavPillTabItem(
+    tab: MainTab,
+    currentTab: MainTab,
     label: String,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     selected: Boolean,
+    tabBoundsProvider: () -> NavTabBounds?,
+    indicatorLeftProvider: () -> Float,
+    indicatorWidthProvider: () -> Float,
+    isIndicatorInitializedProvider: () -> Boolean,
     onBoundsChanged: (leftPx: Float, widthPx: Float) -> Unit,
     onClick: () -> Unit,
     testTag: String,
     iconTestTag: String
 ) {
     val interactionSource = remember { MutableInteractionSource() }
-    val contentColor by animateColorAsState(
-        targetValue = if (selected) {
-            MaterialTheme.colorScheme.onPrimary
-        } else {
-            MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f)
-        },
-        animationSpec = tween(durationMillis = 180),
-        label = "nav_tab_fg_$testTag"
-    )
+    val activeFgColor = MaterialTheme.colorScheme.onPrimary
+    val inactiveFgColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.82f)
+    val iconPainter = rememberVectorPainter(image = icon)
 
-    val iconScale = remember { Animatable(1f) }
-    val iconTilt = remember { Animatable(0f) }
-    LaunchedEffect(selected) {
-        if (selected) {
-            launch {
-                iconScale.snapTo(0.68f)
-                iconScale.animateTo(
-                    targetValue = 1f,
-                    animationSpec = spring(
-                        dampingRatio = 0.42f,
-                        stiffness = Spring.StiffnessMedium
-                    )
+    var lastObservedTab by remember { mutableStateOf(currentTab) }
+    var tapPulseTick by remember { mutableStateOf(0) }
+    val tabContentBounceScale = remember { Animatable(1f) }
+    LaunchedEffect(currentTab, tapPulseTick) {
+        val tabChangedToThis = lastObservedTab != currentTab && currentTab == tab
+        val isRetapOnSelected = lastObservedTab == currentTab && currentTab == tab && tapPulseTick > 0
+        lastObservedTab = currentTab
+
+        if (tabChangedToThis || isRetapOnSelected) {
+            // Phóng to tên + icon ra một chút rồi thu hồi về kích thước ban đầu với độ nảy đàn hồi
+            tabContentBounceScale.animateTo(
+                targetValue = 1.18f,
+                animationSpec = tween(durationMillis = 90, easing = FastOutSlowInEasing)
+            )
+            tabContentBounceScale.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = 0.36f,
+                    stiffness = Spring.StiffnessMedium
                 )
-            }
-            launch {
-                iconTilt.snapTo(-14f)
-                iconTilt.animateTo(
-                    targetValue = 0f,
-                    animationSpec = spring(
-                        dampingRatio = 0.45f,
-                        stiffness = Spring.StiffnessMedium
-                    )
+            )
+        } else if (tabContentBounceScale.value != 1f) {
+            tabContentBounceScale.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium
                 )
+            )
+        }
+    }
+
+    // Đọc độ phủ của viên nhộng đậm chỉ trong pha Vẽ (Draw Phase) -> 0 Recomposition khi trượt 120Hz
+    val pillCoverageState = remember(selected) {
+        derivedStateOf {
+            val initialized = isIndicatorInitializedProvider()
+            val bounds = tabBoundsProvider()
+            val pWidth = indicatorWidthProvider()
+            if (!initialized || bounds == null || bounds.widthPx <= 1f || pWidth <= 1f) {
+                if (selected) 1f else 0f
+            } else {
+                val tLeft = bounds.leftPx
+                val tRight = tLeft + bounds.widthPx
+                val pLeft = indicatorLeftProvider()
+                val pRight = pLeft + pWidth
+                val overlapPx = (minOf(tRight, pRight) - maxOf(tLeft, pLeft)).coerceAtLeast(0f)
+                val raw = (overlapPx / bounds.widthPx).coerceIn(0f, 1f)
+                raw * raw * (3f - 2f * raw)
             }
         }
+    }
+    val textColorProducer = remember(inactiveFgColor, activeFgColor, pillCoverageState) {
+        ColorProducer { lerp(inactiveFgColor, activeFgColor, pillCoverageState.value) }
     }
 
     Box(
@@ -639,25 +617,31 @@ private fun NavPillTabItem(
             .onPlaced { coords ->
                 onBoundsChanged(coords.positionInParent().x, coords.size.width.toFloat())
             }
-            .springPress(scaleDown = 0.90f, interactionSource = interactionSource)
             .clip(CircleShape)
             .clickable(
                 interactionSource = interactionSource,
                 indication = null,
-                onClick = onClick
+                onClick = {
+                    if (currentTab == tab) {
+                        tapPulseTick++
+                    }
+                    onClick()
+                }
             )
             .testTag(testTag)
+            .padding(horizontal = 12.dp)
     ) {
+        // Cụm Icon + Chữ đứng tại chỗ (translationX = 0f), phóng to nhẹ khi chọn rồi đàn hồi về kích thước gốc
         Row(
             modifier = Modifier
-                .fillMaxHeight()
-                .animateContentSize(
-                    animationSpec = spring(
-                        dampingRatio = 0.62f,
-                        stiffness = Spring.StiffnessMedium
-                    )
-                )
-                .padding(horizontal = 12.dp),
+                .height(24.dp)
+                .graphicsLayer {
+                    val bounceScale = tabContentBounceScale.value
+                    translationX = 0f
+                    scaleX = bounceScale
+                    scaleY = bounceScale
+                }
+                .testTag("${testTag}_content"),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.Center
         ) {
@@ -665,52 +649,37 @@ private fun NavPillTabItem(
                 visible = selected,
                 enter = expandHorizontally(
                     expandFrom = Alignment.Start,
-                    animationSpec = spring(
-                        dampingRatio = 0.60f,
-                        stiffness = Spring.StiffnessMedium
-                    )
-                ) + scaleIn(
-                    initialScale = 0.4f,
-                    animationSpec = spring(
-                        dampingRatio = 0.48f,
-                        stiffness = Spring.StiffnessMedium
-                    )
-                ) + fadeIn(animationSpec = tween(durationMillis = 150)),
+                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
+                ) + fadeIn(animationSpec = tween(durationMillis = 140)),
                 exit = shrinkHorizontally(
                     shrinkTowards = Alignment.Start,
-                    animationSpec = spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMedium
-                    )
-                ) + scaleOut(
-                    targetScale = 0.4f,
-                    animationSpec = tween(durationMillis = 110)
+                    animationSpec = tween(durationMillis = 160, easing = FastOutSlowInEasing)
                 ) + fadeOut(animationSpec = tween(durationMillis = 110))
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = contentColor,
+                    Canvas(
                         modifier = Modifier
                             .size(18.dp)
-                            .graphicsLayer {
-                                scaleX = iconScale.value
-                                scaleY = iconScale.value
-                                rotationZ = iconTilt.value
-                            }
                             .testTag(iconTestTag)
-                    )
+                    ) {
+                        val tintColor = lerp(inactiveFgColor, activeFgColor, pillCoverageState.value)
+                        with(iconPainter) {
+                            draw(
+                                size = size,
+                                colorFilter = ColorFilter.tint(tintColor)
+                            )
+                        }
+                    }
                     Spacer(modifier = Modifier.width(5.dp))
                 }
             }
 
-            Text(
+            BasicText(
                 text = label,
                 style = MaterialTheme.typography.labelLarge.copy(
                     fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium
                 ),
-                color = contentColor,
+                color = textColorProducer,
                 maxLines = 1
             )
         }

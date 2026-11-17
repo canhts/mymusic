@@ -217,9 +217,8 @@ internal fun NowPlayingScreen(
     val effectiveDuration = (if (durationMs > 0L) durationMs else song.duration).coerceAtLeast(1L)
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val flowPositionMs by currentPositionMsFlow.collectAsStateWithLifecycle()
     val livePositionAnimatable = remember(song.id) {
-        Animatable(flowPositionMs.toFloat().coerceIn(0f, effectiveDuration.toFloat()))
+        Animatable(currentPositionMsFlow.value.toFloat().coerceIn(0f, effectiveDuration.toFloat()))
     }
 
     var isDraggingScrubber by remember(song.id) { mutableStateOf(false) }
@@ -836,8 +835,17 @@ private class AudioEnvelopeState {
     var treble by mutableFloatStateOf(0f)
     var onset by mutableFloatStateOf(0f)
 
+    // Hệ 3 lò xo đàn hồi bậc 2 (Underdamped Hookean Springs) tạo độ nảy & đàn hồi sống động theo nhạc
+    var radialBounce by mutableFloatStateOf(0f)
+    var waveBounce by mutableFloatStateOf(0f)
+    var jellyBounce by mutableFloatStateOf(0f)
+
+    private var radialVel = 0f
+    private var waveVel = 0f
+    private var jellyVel = 0f
+
     val beatPulse: Float
-        get() = (bass * 0.62f + onset * 0.38f).coerceIn(0f, 1f)
+        get() = (bass * 0.56f + onset * 0.34f + radialBounce.coerceAtLeast(0f) * 0.22f).coerceIn(0f, 1f)
 
     fun isNearSilent(): Boolean =
         overall < 0.0005f &&
@@ -845,7 +853,13 @@ private class AudioEnvelopeState {
             lowMid < 0.0005f &&
             highMid < 0.0005f &&
             treble < 0.0005f &&
-            onset < 0.0005f
+            onset < 0.0005f &&
+            abs(radialBounce) < 0.001f &&
+            abs(waveBounce) < 0.001f &&
+            abs(jellyBounce) < 0.001f &&
+            abs(radialVel) < 0.005f &&
+            abs(waveVel) < 0.005f &&
+            abs(jellyVel) < 0.005f
 
     fun snapSilent() {
         overall = 0f
@@ -854,6 +868,12 @@ private class AudioEnvelopeState {
         highMid = 0f
         treble = 0f
         onset = 0f
+        radialBounce = 0f
+        waveBounce = 0f
+        jellyBounce = 0f
+        radialVel = 0f
+        waveVel = 0f
+        jellyVel = 0f
     }
 
     fun isNearTarget(target: AudioBeatFrame): Boolean =
@@ -871,15 +891,36 @@ private class AudioEnvelopeState {
         highMid = target.highMid
         treble = target.treble
         onset = target.onset
+        radialBounce = (target.bass * 0.65f + target.onset * 0.45f).coerceIn(0f, 1f)
+        waveBounce = (target.lowMid * 0.50f + target.highMid * 0.55f).coerceIn(0f, 1f)
+        jellyBounce = (target.bass * 0.42f + target.onset * 0.35f - target.highMid * 0.25f).coerceIn(-0.35f, 0.85f)
+        radialVel = 0f
+        waveVel = 0f
+        jellyVel = 0f
     }
 
     fun stepToward(target: AudioBeatFrame, dtMs: Float) {
+        val bassRise = (target.bass - bass).coerceAtLeast(0f)
+        val onsetRise = (target.onset - onset).coerceAtLeast(0f)
+        val midRise = (target.highMid - highMid).coerceAtLeast(0f)
+
         overall = stepAudioBand(overall, target.overall, dtMs, attackMs = 16f, releaseMs = 115f)
         bass = stepAudioBand(bass, target.bass, dtMs, attackMs = 12f, releaseMs = 105f)
         lowMid = stepAudioBand(lowMid, target.lowMid, dtMs, attackMs = 16f, releaseMs = 110f)
         highMid = stepAudioBand(highMid, target.highMid, dtMs, attackMs = 16f, releaseMs = 105f)
         treble = stepAudioBand(treble, target.treble, dtMs, attackMs = 12f, releaseMs = 90f)
         onset = stepAudioBand(onset, target.onset, dtMs, attackMs = 10f, releaseMs = 120f)
+
+        // Xung vận tốc tức thời khi có nhịp trống / phách mạnh để tạo độ bật nảy đàn hồi
+        radialVel = (radialVel + onsetRise * 4.4f + bassRise * 2.8f).coerceIn(-16f, 16f)
+        waveVel = (waveVel + onsetRise * 3.8f + midRise * 2.5f).coerceIn(-16f, 16f)
+        jellyVel = (jellyVel + onsetRise * 4.8f + bassRise * 2.6f - midRise * 1.8f).coerceIn(-16f, 16f)
+
+        val radialEq = (bass * 0.68f + onset * 0.48f + overall * 0.18f).coerceIn(0f, 1.15f)
+        val waveEq = (lowMid * 0.54f + highMid * 0.60f + onset * 0.38f).coerceIn(0f, 1.15f)
+        val jellyEq = (bass * 0.48f + onset * 0.42f - highMid * 0.28f).coerceIn(-0.40f, 0.90f)
+
+        stepSprings(dtMs = dtMs, radialEq = radialEq, waveEq = waveEq, jellyEq = jellyEq)
     }
 
     fun decayToSilent(dtMs: Float) {
@@ -889,6 +930,25 @@ private class AudioEnvelopeState {
         highMid = stepAudioBand(highMid, 0f, dtMs, attackMs = 16f, releaseMs = 105f)
         treble = stepAudioBand(treble, 0f, dtMs, attackMs = 12f, releaseMs = 90f)
         onset = stepAudioBand(onset, 0f, dtMs, attackMs = 10f, releaseMs = 120f)
+        stepSprings(dtMs = dtMs, radialEq = 0f, waveEq = 0f, jellyEq = 0f)
+    }
+
+    private fun stepSprings(dtMs: Float, radialEq: Float, waveEq: Float, jellyEq: Float) {
+        val halfDt = (dtMs * 0.0005f).coerceIn(0.0005f, 0.016f)
+        // Tích phân Symplectic Euler 2 bước nhỏ đảm bảo ổn định tuyệt đối và giữ trọn độ nảy lò xo
+        repeat(2) {
+            val rAcc = (28f * 28f) * (radialEq - radialBounce) - (2f * 0.28f * 28f) * radialVel
+            radialVel = (radialVel + rAcc * halfDt).coerceIn(-18f, 18f)
+            radialBounce = (radialBounce + radialVel * halfDt).coerceIn(-0.38f, 1.38f)
+
+            val wAcc = (33f * 33f) * (waveEq - waveBounce) - (2f * 0.26f * 33f) * waveVel
+            waveVel = (waveVel + wAcc * halfDt).coerceIn(-18f, 18f)
+            waveBounce = (waveBounce + waveVel * halfDt).coerceIn(-0.42f, 1.42f)
+
+            val jAcc = (25f * 25f) * (jellyEq - jellyBounce) - (2f * 0.25f * 25f) * jellyVel
+            jellyVel = (jellyVel + jAcc * halfDt).coerceIn(-18f, 18f)
+            jellyBounce = (jellyBounce + jellyVel * halfDt).coerceIn(-0.65f, 1.15f)
+        }
     }
 
     private fun stepAudioBand(
@@ -916,7 +976,17 @@ internal class SphereCloudBuffers(
     val layer: IntArray, // 0 = lớp vỏ ngoài gọn nét, 1 = các dải nổi khối, 2 = lõi chiều sâu bên trong
     val sizeWeight: FloatArray,
     val alphaWeight: FloatArray,
-    val phaseSeed: FloatArray
+    val phaseSeed: FloatArray,
+    // Các bảng lượng giác và đa thức Legendre tính sẵn 1 lần duy nhất giúp vòng lặp 60Hz Zero-Trig
+    val sin3Az: FloatArray,
+    val cos3Az: FloatArray,
+    val sin2El: FloatArray,
+    val cos2El: FloatArray,
+    val sinMidPhase: FloatArray,
+    val cosMidPhase: FloatArray,
+    val sinFinePhase: FloatArray,
+    val cosFinePhase: FloatArray,
+    val quadrupole: FloatArray
 )
 
 @Immutable
@@ -958,13 +1028,14 @@ private data class SphereQuat(
 }
 
 /**
- * Khởi tạo trước 1020 hạt vi cầu gọn nét, không phân tán ra ngoài vỏ cầu:
- * gồm lớp vỏ Fibonacci mịn (0.94..1.00), 6 dải nổi khối (0.88..0.98), và lõi chiều sâu (0.62..0.86).
+ * Khởi tạo trước 1860 hạt vi cầu mịn, nhỏ gọn, không phân tán ra ngoài vỏ cầu:
+ * gồm lớp vỏ Fibonacci mật độ cao (1040 hạt, 0.94..1.00), 8 dải nổi khối (560 hạt, 0.88..0.98),
+ * và lõi chiều sâu (260 hạt, 0.62..0.86), kèm các bảng lượng giác tính sẵn cho render 60Hz siêu mượt.
  */
 internal val SPHERE_CLOUD_BUFFERS: SphereCloudBuffers by lazy {
-    val shellCount = 560
-    val ribbonCount = 320
-    val innerCount = 140
+    val shellCount = 1040
+    val ribbonCount = 560
+    val innerCount = 260
     val total = shellCount + ribbonCount + innerCount
 
     val nx = FloatArray(total)
@@ -978,6 +1049,16 @@ internal val SPHERE_CLOUD_BUFFERS: SphereCloudBuffers by lazy {
     val alphaWeight = FloatArray(total)
     val phaseSeed = FloatArray(total)
 
+    val sin3Az = FloatArray(total)
+    val cos3Az = FloatArray(total)
+    val sin2El = FloatArray(total)
+    val cos2El = FloatArray(total)
+    val sinMidPhase = FloatArray(total)
+    val cosMidPhase = FloatArray(total)
+    val sinFinePhase = FloatArray(total)
+    val cosFinePhase = FloatArray(total)
+    val quadrupole = FloatArray(total)
+
     fun pseudoRand(seed: Int): Float {
         var x = seed * 747796405 + 2891336453.toInt()
         x = ((x ushr ((x ushr 28) + 4)) xor x) * 277803737
@@ -988,14 +1069,14 @@ internal val SPHERE_CLOUD_BUFFERS: SphereCloudBuffers by lazy {
     val goldenAngle = (PI * (3.0 - kotlin.math.sqrt(5.0))).toFloat()
     var idx = 0
 
-    // 1. Lớp vỏ cầu Fibonacci gọn chặt, đồng đều tạo hình khối rõ ràng
+    // 1. Lớp vỏ cầu Fibonacci mật độ cao (1040 hạt nhỏ mịn) tạo hình khối sắc nét
     for (i in 0 until shellCount) {
         val h1 = pseudoRand(i * 13 + 7)
         val h2 = pseudoRand(i * 29 + 19)
         val h3 = pseudoRand(i * 43 + 31)
         val yUnit = 1f - (2f * (i + 0.5f) / shellCount)
-        val theta = goldenAngle * i + (h1 - 0.5f) * 0.14f
-        val elev = kotlin.math.asin(yUnit.coerceIn(-1f, 1f)) + (h2 - 0.5f) * 0.05f
+        val theta = goldenAngle * i + (h1 - 0.5f) * 0.12f
+        val elev = kotlin.math.asin(yUnit.coerceIn(-1f, 1f)) + (h2 - 0.5f) * 0.04f
         val cosE = cos(elev)
 
         nx[idx] = cosE * cos(theta)
@@ -1005,25 +1086,25 @@ internal val SPHERE_CLOUD_BUFFERS: SphereCloudBuffers by lazy {
         azimuth[idx] = theta
         elevation[idx] = elev
         layer[idx] = 0
-        sizeWeight[idx] = 0.58f + h1 * 0.92f
+        sizeWeight[idx] = 0.48f + h1 * 0.62f
         alphaWeight[idx] = 0.54f + h2 * 0.46f
         phaseSeed[idx] = h3 * 6.28318f
         idx++
     }
 
-    // 2. 6 dải sương uốn lượn ôm sát mặt cầu tạo độ nổi khối tinh tế
-    val ribbonCurves = 6
+    // 2. 8 dải sương uốn lượn ôm sát mặt cầu tạo độ nổi khối tinh tế
+    val ribbonCurves = 8
     val perRibbon = ribbonCount / ribbonCurves
     for (c in 0 until ribbonCurves) {
-        val tilt = (c * 0.52f) - 1.1f
-        val phaseShift = c * 1.047f
+        val tilt = (c * 0.38f) - 1.33f
+        val phaseShift = c * 0.7854f
         for (j in 0 until perRibbon) {
             val h1 = pseudoRand(idx * 17 + 3)
             val h2 = pseudoRand(idx * 37 + 11)
             val u = (j.toFloat() / perRibbon.toFloat()) * 2f * PI.toFloat()
-            val elev = (sin(u * 2f + phaseShift) * 0.88f + tilt * 0.28f + (h1 - 0.5f) * 0.05f)
+            val elev = (sin(u * 2f + phaseShift) * 0.88f + tilt * 0.26f + (h1 - 0.5f) * 0.045f)
                 .coerceIn(-1.42f, 1.42f)
-            val theta = u + cos(u * 3f + c) * 0.30f + (h2 - 0.5f) * 0.05f
+            val theta = u + cos(u * 3f + c) * 0.30f + (h2 - 0.5f) * 0.045f
             val cosE = cos(elev)
 
             nx[idx] = cosE * cos(theta)
@@ -1033,7 +1114,7 @@ internal val SPHERE_CLOUD_BUFFERS: SphereCloudBuffers by lazy {
             azimuth[idx] = theta
             elevation[idx] = elev
             layer[idx] = 1
-            sizeWeight[idx] = 0.70f + h2 * 1.05f
+            sizeWeight[idx] = 0.56f + h2 * 0.68f
             alphaWeight[idx] = 0.62f + h1 * 0.38f
             phaseSeed[idx] = u + c
             idx++
@@ -1052,7 +1133,7 @@ internal val SPHERE_CLOUD_BUFFERS: SphereCloudBuffers by lazy {
         azimuth[idx] = theta
         elevation[idx] = elev
         layer[idx] = 1
-        sizeWeight[idx] = 0.65f + h2 * 0.90f
+        sizeWeight[idx] = 0.52f + h2 * 0.62f
         alphaWeight[idx] = 0.58f + h1 * 0.40f
         phaseSeed[idx] = h2 * 6.28318f
         idx++
@@ -1074,10 +1155,30 @@ internal val SPHERE_CLOUD_BUFFERS: SphereCloudBuffers by lazy {
         azimuth[idx] = theta
         elevation[idx] = elev
         layer[idx] = 2
-        sizeWeight[idx] = 0.50f + h2 * 0.65f
+        sizeWeight[idx] = 0.42f + h2 * 0.48f
         alphaWeight[idx] = 0.34f + h1 * 0.38f
         phaseSeed[idx] = h3 * 6.28318f
         idx++
+    }
+
+    // Tính sẵn toàn bộ hệ số lượng giác cho từng hạt (giúp vòng lặp vẽ 60Hz không cần gọi sin/cos)
+    for (m in 0 until total) {
+        val az = azimuth[m]
+        val el = elevation[m]
+        val seed = phaseSeed[m]
+        val nyVal = ny[m]
+        val midAngle = 5f * el - 3f * az + seed * 0.25f
+        val fineAngle = 7f * az + 5f * el
+
+        sin3Az[m] = sin(3f * az)
+        cos3Az[m] = cos(3f * az)
+        sin2El[m] = sin(2f * el)
+        cos2El[m] = cos(2f * el)
+        sinMidPhase[m] = sin(midAngle)
+        cosMidPhase[m] = cos(midAngle)
+        sinFinePhase[m] = sin(fineAngle)
+        cosFinePhase[m] = cos(fineAngle)
+        quadrupole[m] = 1.5f * nyVal * nyVal - 0.5f
     }
 
     SphereCloudBuffers(
@@ -1091,16 +1192,25 @@ internal val SPHERE_CLOUD_BUFFERS: SphereCloudBuffers by lazy {
         layer = layer,
         sizeWeight = sizeWeight,
         alphaWeight = alphaWeight,
-        phaseSeed = phaseSeed
+        phaseSeed = phaseSeed,
+        sin3Az = sin3Az,
+        cos3Az = cos3Az,
+        sin2El = sin2El,
+        cos2El = cos2El,
+        sinMidPhase = sinMidPhase,
+        cosMidPhase = cosMidPhase,
+        sinFinePhase = sinFinePhase,
+        cosFinePhase = cosFinePhase,
+        quadrupole = quadrupole
     )
 }
 
 /**
  * Hiệu ứng Play khối cầu hạt 3D tương tác:
- * - Hạt li ti kết thành khối cầu 3D gọn gàng, không phân tán loãng.
- * - Phản ứng tức thì theo âm thanh thật của từng bài hát (Bass, Mid, Treble, Onset).
+ * - 1860 hạt vi cầu nhỏ mịn kết thành khối cầu 3D dày đặc, sắc nét.
+ * - Phản ứng tức thì theo âm thanh thật của từng bài hát kết hợp hệ lò xo bậc 2 tạo độ nảy & đàn hồi sống động.
  * - Hỗ trợ xoay tự do theo mọi hướng bằng thao tác chạm/kéo có quán tính êm, đồng thời
- *   vẫn giữ trọn chuyển động nhịp theo nhạc trong suốt lúc tay đang giữ/xoay quả cầu.
+ *   vẫn giữ trọn chuyển động nhịp đàn hồi theo nhạc trong suốt lúc tay đang giữ/xoay quả cầu.
  */
 @Composable
 private fun AudioCloudSphereVisualizer(
@@ -1143,13 +1253,6 @@ private fun AudioCloudSphereVisualizer(
     }
 
     val sphereContentDesc = stringResource(R.string.cd_interactive_audio_sphere)
-    val orientationTag = remember(userQuat) {
-        val qx = (userQuat.x * 1000f).toInt()
-        val qy = (userQuat.y * 1000f).toInt()
-        val qz = (userQuat.z * 1000f).toInt()
-        val qw = (userQuat.w * 1000f).toInt()
-        "${qw}_${qx}_${qy}_${qz}"
-    }
 
     Box(
         contentAlignment = Alignment.Center,
@@ -1193,7 +1296,12 @@ private fun AudioCloudSphereVisualizer(
             }
             .semantics {
                 contentDescription = sphereContentDesc
-                stateDescription = orientationTag
+                val q = userQuat
+                val qx = (q.x * 1000f).toInt()
+                val qy = (q.y * 1000f).toInt()
+                val qz = (q.z * 1000f).toInt()
+                val qw = (q.w * 1000f).toInt()
+                stateDescription = "${qw}_${qx}_${qy}_${qz}"
             }
             .testTag("player_kinetic_artwork")
     ) {
@@ -1238,140 +1346,197 @@ private fun AudioCloudSphereVisualizer(
             modifier = Modifier.fillMaxSize()
         ) { _ ->
             Canvas(modifier = Modifier.fillMaxSize()) {
-            val minDim = size.minDimension
-            val center = Offset(size.width / 2f, size.height / 2f)
-            val sphereRadius = minDim * 0.405f
+                val minDim = size.minDimension
+                val center = Offset(size.width / 2f, size.height / 2f)
+                val sphereRadius = minDim * 0.405f
 
-            val bass = audioEnvelope.bass
-            val lowMid = audioEnvelope.lowMid
-            val highMid = audioEnvelope.highMid
-            val treble = audioEnvelope.treble
-            val overall = audioEnvelope.overall
-            val onset = audioEnvelope.onset
+                val bass = audioEnvelope.bass
+                val lowMid = audioEnvelope.lowMid
+                val highMid = audioEnvelope.highMid
+                val treble = audioEnvelope.treble
+                val overall = audioEnvelope.overall
+                val onset = audioEnvelope.onset
+                val radialBounce = audioEnvelope.radialBounce
+                val waveBounce = audioEnvelope.waveBounce
+                val jellyBounce = audioEnvelope.jellyBounce
 
-            // Quầng khí quyển gọn ôm quanh khối cầu (Zero-Allocation via normalized brush scale)
-            val auraAlpha = (if (isPlaying) 0.06f + overall * 0.20f + bass * 0.09f else 0.04f).coerceIn(0f, 1f)
-            val auraRadius = minDim * (0.44f + 0.045f * bass)
-            val auraScale = auraRadius / 100f
-            withTransform({
-                translate(left = center.x, top = center.y)
-                scale(scaleX = auraScale, scaleY = auraScale, pivot = Offset.Zero)
-            }) {
-                drawCircle(
-                    brush = auraBrush,
-                    radius = 100f,
-                    center = Offset.Zero,
-                    alpha = auraAlpha
-                )
-            }
-
-            // Hướng xoay 3D tổng hợp từ thao tác tay (Quaternion không gimbal lock) + tự xoay nhẹ theo nhạc
-            val timeSec = livePositionState.value * 0.001f
-            val autoYaw = timeSec * 0.36f
-            val autoPitch = 0.20f + sin(timeSec * 0.24f) * 0.14f
-            val autoQuat = (SphereQuat.fromScreenPitch(autoPitch) * SphereQuat.fromScreenYaw(autoYaw))
-            val totalQuat = (userQuat * autoQuat).normalized()
-
-            // Chuyển Quaternion sang ma trận xoay 3x3 một lần cho toàn bộ khung hình
-            val qw = totalQuat.w
-            val qx = totalQuat.x
-            val qy = totalQuat.y
-            val qz = totalQuat.z
-            val m00 = 1f - 2f * (qy * qy + qz * qz)
-            val m01 = 2f * (qx * qy - qz * qw)
-            val m02 = 2f * (qx * qz + qy * qw)
-            val m10 = 2f * (qx * qy + qz * qw)
-            val m11 = 1f - 2f * (qx * qx + qz * qz)
-            val m12 = 2f * (qy * qz - qx * qw)
-            val m20 = 2f * (qx * qz - qy * qw)
-            val m21 = 2f * (qy * qz + qx * qw)
-            val m22 = 1f - 2f * (qx * qx + qy * qy)
-
-            val bodyColor = lerp(primaryColor, tertiaryColor, (0.35f + treble * 0.45f).coerceIn(0f, 1f))
-
-            val baseDotPx = (minDim * 0.0048f).coerceIn(0.85.dp.toPx(), 1.95.dp.toPx())
-            val waveFlowPhase = timeSec * 1.45f
-            val wf085 = waveFlowPhase * 0.85f
-            val wf055 = waveFlowPhase * 0.55f
-            val wf125 = waveFlowPhase * 1.25f
-            val wf190 = waveFlowPhase * 1.9f
-            val bassScale = 0.022f + bass * 0.082f + lowMid * 0.028f
-            val midScale = 0.012f + highMid * 0.042f
-            val trebleScale = 0.006f + treble * 0.032f
-            val curlAmp = 0.032f * (0.3f + lowMid + highMid)
-            val breathScale = 1f + bass * 0.055f + onset * 0.035f
-
-            val b = SPHERE_CLOUD_BUFFERS
-            for (i in 0 until b.count) {
-                val az = b.azimuth[i]
-                val el = b.elevation[i]
-                val seed = b.phaseSeed[i]
-                val particleLayer = b.layer[i]
-
-                // Sóng gợn gọn trên bề mặt cầu theo nhịp thật (vẫn đập đều ngay cả khi đang dùng tay xoay)
-                val macroFold = sin(3f * az + wf085) * cos(2f * el - wf055)
-                val midRipple = sin(5f * el - 3f * az + wf125 + seed * 0.25f)
-                val fineSpark = cos(7f * az + 5f * el - wf190)
-
-                val pulsePush = onset * (if (particleLayer == 1) 0.048f else 0.032f)
-
-                val displacedR = b.baseR[i] * breathScale * (
-                    1f +
-                        macroFold * bassScale +
-                        midRipple * midScale +
-                        fineSpark * trebleScale +
-                        pulsePush
-                    )
-
-                val curlShift = macroFold * curlAmp
-                val curIdx = i
-                val x0 = (b.nx[curIdx] - b.nz[curIdx] * curlShift) * displacedR
-                val y0 = b.ny[i] * displacedR
-                val z0 = (b.nz[i] + b.nx[i] * curlShift) * displacedR
-
-                // Xoay 3D theo ma trận tổng hợp Quaternion
-                val x1 = m00 * x0 + m01 * y0 + m02 * z0
-                val y2 = m10 * x0 + m11 * y0 + m12 * z0
-                val z2 = m20 * x0 + m21 * y0 + m22 * z0
-
-                val persp = 2.75f / (2.75f - z2.coerceIn(-1.25f, 1.25f))
-                val px = center.x + x1 * sphereRadius * persp
-                val py = center.y + y2 * sphereRadius * persp
-
-                val depthFactor = ((z2 + 1.10f) / 2.20f).coerceIn(0f, 1f)
-                val rimDensity = sqrt((x1 * x1 + y2 * y2).coerceIn(0f, 1.30f)).coerceIn(0f, 1f)
-                val crestIntensity = (abs(macroFold) * 0.55f + abs(midRipple) * 0.45f).coerceIn(0f, 1f)
-
-                val radiusMult = when (particleLayer) {
-                    1 -> 1.12f + crestIntensity * 0.44f + onset * 0.30f
-                    2 -> 0.88f + treble * 0.40f
-                    else -> 0.94f + bass * 0.30f + crestIntensity * 0.22f
-                }
-                val dotRadius = baseDotPx * b.sizeWeight[i] * persp * radiusMult
-
-                val highlightMix = (rimDensity * 0.52f + crestIntensity * 0.36f + depthFactor * 0.30f + onset * 0.24f - 0.16f)
+                // Quầng khí quyển gọn ôm quanh khối cầu (Zero-Allocation via normalized brush scale)
+                val auraAlpha = (if (isPlaying) 0.06f + overall * 0.18f + radialBounce.coerceAtLeast(0f) * 0.11f else 0.04f)
                     .coerceIn(0f, 1f)
-                val particleColor = when {
-                    particleLayer == 2 -> deepMistColor
-                    highlightMix > 0.55f -> lerp(bodyColor, crestColor, ((highlightMix - 0.55f) / 0.45f).coerceIn(0f, 1f))
-                    else -> lerp(deepMistColor, bodyColor, (highlightMix / 0.55f).coerceIn(0f, 1f))
+                val auraRadius = minDim * (0.44f + 0.052f * radialBounce.coerceIn(-0.2f, 1.2f))
+                val auraScale = auraRadius / 100f
+                withTransform({
+                    translate(left = center.x, top = center.y)
+                    scale(scaleX = auraScale, scaleY = auraScale, pivot = Offset.Zero)
+                }) {
+                    drawCircle(
+                        brush = auraBrush,
+                        radius = 100f,
+                        center = Offset.Zero,
+                        alpha = auraAlpha
+                    )
                 }
 
-                val interiorDim = if (particleLayer == 2) 0.52f else (0.46f + 0.54f * rimDensity)
-                val playingBoost = if (isPlaying) {
-                    (0.54f + overall * 0.34f + crestIntensity * 0.24f + onset * 0.18f).coerceIn(0.48f, 1.05f)
-                } else {
-                    0.56f
-                }
-                val finalAlpha = (b.alphaWeight[i] * (0.26f + 0.74f * depthFactor) * interiorDim * playingBoost)
-                    .coerceIn(0.08f, 0.96f)
+                // Hướng xoay 3D tổng hợp từ thao tác tay (Quaternion) + tự xoay nhẹ & xoắn nhịp đàn hồi theo nhạc
+                val timeSec = livePositionState.value * 0.001f
+                val autoYaw = timeSec * 0.36f + jellyBounce * 0.045f
+                val autoPitch = 0.20f + sin(timeSec * 0.24f) * 0.14f + radialBounce * 0.028f
+                val autoQuat = (SphereQuat.fromScreenPitch(autoPitch) * SphereQuat.fromScreenYaw(autoYaw))
+                val totalQuat = (userQuat * autoQuat).normalized()
 
-                drawCircle(
-                    color = particleColor.copy(alpha = finalAlpha),
-                    radius = dotRadius,
-                    center = Offset(px, py)
-                )
-            }
+                // Chuyển Quaternion sang ma trận xoay 3x3 một lần cho toàn bộ khung hình
+                val qw = totalQuat.w
+                val qx = totalQuat.x
+                val qy = totalQuat.y
+                val qz = totalQuat.z
+                val m00 = 1f - 2f * (qy * qy + qz * qz)
+                val m01 = 2f * (qx * qy - qz * qw)
+                val m02 = 2f * (qx * qz + qy * qw)
+                val m10 = 2f * (qx * qy + qz * qw)
+                val m11 = 1f - 2f * (qx * qx + qz * qz)
+                val m12 = 2f * (qy * qz - qx * qw)
+                val m20 = 2f * (qx * qz - qy * qw)
+                val m21 = 2f * (qy * qz + qx * qw)
+                val m22 = 1f - 2f * (qx * qx + qy * qy)
+
+                val bodyColor = lerp(primaryColor, tertiaryColor, (0.35f + treble * 0.45f).coerceIn(0f, 1f))
+                val deepR = deepMistColor.red
+                val deepG = deepMistColor.green
+                val deepB = deepMistColor.blue
+                val bodyR = bodyColor.red
+                val bodyG = bodyColor.green
+                val bodyB = bodyColor.blue
+                val crestR = crestColor.red
+                val crestG = crestColor.green
+                val crestB = crestColor.blue
+
+                // Hạt vi cầu nhỏ mịn hơn (0.55dp .. 1.28dp) tạo hiệu ứng đám mây hạt 3D sắc sảo
+                val baseDotPx = (minDim * 0.0031f).coerceIn(0.55.dp.toPx(), 1.28.dp.toPx())
+                val waveFlowPhase = timeSec * 1.48f
+                val wf085 = waveFlowPhase * 0.85f
+                val wf055 = waveFlowPhase * 0.55f
+                val wf125 = waveFlowPhase * 1.25f
+                val wf190 = waveFlowPhase * 1.9f
+
+                // Tính sẵn sin/cos của pha thời gian 1 lần duy nhất mỗi khung hình (Zero-Trig trong vòng lặp hạt)
+                val sinWf085 = sin(wf085)
+                val cosWf085 = cos(wf085)
+                val sinWf055 = sin(wf055)
+                val cosWf055 = cos(wf055)
+                val sinWf125 = sin(wf125)
+                val cosWf125 = cos(wf125)
+                val sinWf190 = sin(wf190)
+                val cosWf190 = cos(wf190)
+
+                // Độ nảy đàn hồi đa tầng kết hợp biên độ âm thanh và dao động lò xo bậc 2
+                val bassScale = 0.022f + bass * 0.056f + waveBounce * 0.068f + lowMid * 0.026f
+                val midScale = 0.012f + highMid * 0.035f + abs(waveBounce) * 0.036f
+                val trebleScale = 0.006f + treble * 0.032f
+                val curlAmp = 0.034f * (0.28f + lowMid + highMid + abs(waveBounce) * 0.72f)
+                val breathScale = (1f + bass * 0.032f + radialBounce * 0.078f + onset * 0.028f).coerceIn(0.86f, 1.20f)
+                val jellyFactor = jellyBounce * 0.072f
+                val pushLayer0 = onset * 0.028f + radialBounce * 0.036f
+                val pushLayer1 = onset * 0.045f + radialBounce * 0.058f
+                val pushLayer2 = onset * 0.020f + radialBounce * 0.024f
+
+                val b = SPHERE_CLOUD_BUFFERS
+                for (i in 0 until b.count) {
+                    val particleLayer = b.layer[i]
+
+                    // Công thức cộng góc lượng giác từ bảng tính sẵn: chính xác tuyệt đối, 0 lệnh gọi sin/cos
+                    val macroAz = b.sin3Az[i] * cosWf085 + b.cos3Az[i] * sinWf085
+                    val macroEl = b.cos2El[i] * cosWf055 + b.sin2El[i] * sinWf055
+                    val macroFold = macroAz * macroEl
+                    val midRipple = b.sinMidPhase[i] * cosWf125 + b.cosMidPhase[i] * sinWf125
+                    val fineSpark = b.cosFinePhase[i] * cosWf190 + b.sinFinePhase[i] * sinWf190
+
+                    val pulsePush = when (particleLayer) {
+                        1 -> pushLayer1
+                        0 -> pushLayer0
+                        else -> pushLayer2
+                    }
+
+                    // Biến dạng đàn hồi Squash & Stretch bảo toàn thể tích (Legendre P2) + sóng bề mặt lò xo
+                    val axialElastic = 1f - jellyFactor * b.quadrupole[i]
+                    val displacedR = b.baseR[i] * breathScale * axialElastic * (
+                        1f +
+                            macroFold * bassScale +
+                            midRipple * midScale +
+                            fineSpark * trebleScale +
+                            pulsePush
+                        )
+
+                    val curlShift = macroFold * curlAmp + jellyFactor * 0.35f * b.ny[i]
+                    val nxVal = b.nx[i]
+                    val nyVal = b.ny[i]
+                    val nzVal = b.nz[i]
+                    val x0 = (nxVal - nzVal * curlShift) * displacedR
+                    val y0 = nyVal * displacedR
+                    val z0 = (nzVal + nxVal * curlShift) * displacedR
+
+                    // Xoay 3D theo ma trận tổng hợp Quaternion
+                    val x1 = m00 * x0 + m01 * y0 + m02 * z0
+                    val y2 = m10 * x0 + m11 * y0 + m12 * z0
+                    val z2 = m20 * x0 + m21 * y0 + m22 * z0
+
+                    val persp = 2.75f / (2.75f - z2.coerceIn(-1.25f, 1.25f))
+                    val px = center.x + x1 * sphereRadius * persp
+                    val py = center.y + y2 * sphereRadius * persp
+
+                    val depthFactor = ((z2 + 1.10f) / 2.20f).coerceIn(0f, 1f)
+                    val rimSq = (x1 * x1 + y2 * y2).coerceIn(0f, 1f)
+                    val rimDensity = rimSq * (0.42f + 0.58f * rimSq)
+                    val crestIntensity = (abs(macroFold) * 0.55f + abs(midRipple) * 0.45f).coerceIn(0f, 1f)
+
+                    val bounceScaleBoost = radialBounce.coerceAtLeast(0f) * 0.22f
+                    val radiusMult = when (particleLayer) {
+                        1 -> 1.08f + crestIntensity * 0.38f + onset * 0.24f + bounceScaleBoost
+                        2 -> 0.84f + treble * 0.34f
+                        else -> 0.90f + bass * 0.24f + crestIntensity * 0.18f + bounceScaleBoost * 0.7f
+                    }
+                    val dotRadius = baseDotPx * b.sizeWeight[i] * persp * radiusMult
+
+                    val highlightMix = (rimDensity * 0.52f + crestIntensity * 0.36f + depthFactor * 0.30f + onset * 0.24f - 0.16f)
+                        .coerceIn(0f, 1f)
+
+                    val rCol: Float
+                    val gCol: Float
+                    val bCol: Float
+                    when {
+                        particleLayer == 2 -> {
+                            rCol = deepR
+                            gCol = deepG
+                            bCol = deepB
+                        }
+                        highlightMix > 0.55f -> {
+                            val t = ((highlightMix - 0.55f) * 2.2222f).coerceIn(0f, 1f)
+                            rCol = bodyR + (crestR - bodyR) * t
+                            gCol = bodyG + (crestG - bodyG) * t
+                            bCol = bodyB + (crestB - bodyB) * t
+                        }
+                        else -> {
+                            val t = (highlightMix * 1.8181f).coerceIn(0f, 1f)
+                            rCol = deepR + (bodyR - deepR) * t
+                            gCol = deepG + (bodyG - deepG) * t
+                            bCol = deepB + (bodyB - deepB) * t
+                        }
+                    }
+
+                    val interiorDim = if (particleLayer == 2) 0.52f else (0.46f + 0.54f * rimDensity)
+                    val playingBoost = if (isPlaying) {
+                        (0.54f + overall * 0.34f + crestIntensity * 0.24f + onset * 0.18f).coerceIn(0.48f, 1.05f)
+                    } else {
+                        0.56f
+                    }
+                    val finalAlpha = (b.alphaWeight[i] * (0.26f + 0.74f * depthFactor) * interiorDim * playingBoost)
+                        .coerceIn(0.08f, 0.96f)
+
+                    drawCircle(
+                        color = Color(red = rCol, green = gCol, blue = bCol, alpha = finalAlpha),
+                        radius = dotRadius,
+                        center = Offset(px, py)
+                    )
+                }
             }
         }
     }

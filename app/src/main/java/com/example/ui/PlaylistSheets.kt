@@ -540,6 +540,11 @@ internal fun AddToPlaylistBottomSheet(
                         }
                     }
                 } else {
+                    val playlistIdsContainingSong = remember(playlists, song.id) {
+                        playlists.asSequence()
+                            .filter { p -> p.songs.any { it.id == song.id } }
+                            .mapTo(HashSet()) { it.id }
+                    }
                     Surface(
                         shape = RoundedCornerShape(20.dp),
                         color = MaterialTheme.colorScheme.surfaceContainer,
@@ -551,10 +556,12 @@ internal fun AddToPlaylistBottomSheet(
                                 .heightIn(max = 300.dp)
                                 .padding(vertical = 4.dp)
                         ) {
-                            items(items = playlists, key = { it.id }) { playlist ->
-                                val alreadyInPlaylist = remember(playlist.songs, song.id) {
-                                    playlist.songs.any { it.id == song.id }
-                                }
+                            items(
+                                items = playlists,
+                                key = { it.id },
+                                contentType = { "playlist_select_row" }
+                            ) { playlist ->
+                                val alreadyInPlaylist = playlistIdsContainingSong.contains(playlist.id)
                                 val isChecked = alreadyInPlaylist || selectedPlaylistIds.contains(playlist.id)
 
                                 Row(
@@ -1055,7 +1062,11 @@ internal fun AddSongsToPlaylistBottomSheet(
                                     .heightIn(max = 300.dp)
                                     .padding(vertical = 4.dp)
                             ) {
-                                items(items = filteredSongs, key = { it.id }) { song ->
+                                items(
+                                    items = filteredSongs,
+                                    key = { it.id },
+                                    contentType = { "pick_song_row" }
+                                ) { song ->
                                     val isChecked = selectedSongIds.contains(song.id)
                                     Row(
                                         modifier = Modifier
@@ -1315,7 +1326,8 @@ internal fun CurrentQueueBottomSheet(
                         ) {
                             itemsIndexed(
                                 items = filteredQueueSongs,
-                                key = { _, song -> song.id }
+                                key = { _, song -> song.id },
+                                contentType = { _, _ -> "queue_song_row" }
                             ) { index, song ->
                                 val isCurrent = currentSong?.id == song.id
                                 val rowCorner by animateDpAsState(
@@ -1645,7 +1657,8 @@ internal fun CarouselPlaylistBottomSheet(
                         ) {
                             itemsIndexed(
                                 items = filteredSongs,
-                                key = { _, song -> song.id }
+                                key = { _, song -> song.id },
+                                contentType = { _, _ -> "carousel_sheet_song_row" }
                             ) { index, song ->
                                 val isCurrent = currentSong?.id == song.id
                                 val rowCorner by animateDpAsState(

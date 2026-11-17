@@ -2,6 +2,7 @@ package com.example.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -66,16 +67,20 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.Offset
@@ -87,12 +92,14 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -115,6 +122,8 @@ import com.example.model.Playlist
 import com.example.model.Song
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 
 internal fun matchesPlaylistSearchQuery(
     playlist: Playlist,
@@ -139,20 +148,26 @@ internal fun PlaylistsOverviewScreen(
     onReorderPlaylists: (List<Long>) -> Unit = {},
     contentTopPadding: Dp,
     contentBottomPadding: Dp,
+    isLoading: Boolean = false,
     modifier: Modifier = Modifier
 ) {
-    val animatedTopPadding by animateDpAsState(
-        targetValue = contentTopPadding,
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "playlists_top_padding"
-    )
-
     val gridState = rememberLazyGridState()
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
+    val quickReturnState = rememberQuickReturnHeaderState(
+        defaultHeaderHeightDp = 56.dp,
+        topPaddingDp = contentTopPadding,
+        canScrollForwardProvider = { gridState.canScrollForward },
+        canScrollBackwardProvider = { gridState.canScrollBackward }
+    )
+    val canScrollGrid by remember(gridState) {
+        derivedStateOf { gridState.canScrollForward || gridState.canScrollBackward }
+    }
+    LaunchedEffect(canScrollGrid) {
+        if (!canScrollGrid) {
+            quickReturnState.resetToVisible()
+        }
+    }
 
     var orderedPlaylists by remember { mutableStateOf(playlists) }
     var searchQuery by remember { mutableStateOf("") }
@@ -220,86 +235,111 @@ internal fun PlaylistsOverviewScreen(
         }
     }
 
-    LazyVerticalGrid(
-        state = gridState,
-        columns = GridCells.Fixed(2),
-        contentPadding = PaddingValues(
-            start = 16.dp,
-            end = 16.dp,
-            top = animatedTopPadding,
-            bottom = contentBottomPadding
-        ),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = modifier
-            .fillMaxSize()
-            .onGloballyPositioned { gridCoords = it }
-            .testTag("playlists_lazy_grid")
-    ) {
-        item(
-            key = "playlists_header",
-            span = { GridItemSpan(maxLineSpan) },
-            contentType = "header"
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                if (orderedPlaylists.isNotEmpty()) {
-                    CapsuleSearchField(
-                        query = searchQuery,
-                        onQueryChange = { searchQuery = it },
-                        placeholderText = stringResource(R.string.search_playlists_placeholder),
-                        containerTestTag = "playlists_search_bar",
-                        inputTestTag = "input_search_playlists",
-                        clearButtonTestTag = "btn_clear_search_playlists",
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(modifier = Modifier.width(10.dp))
-                } else {
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 4.dp)
-                    ) {
-                        Text(
-                            text = stringResource(R.string.playlists_title),
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = stringResource(R.string.playlists_count_format, orderedPlaylists.size),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
+    val topInsetPx = with(density) { contentTopPadding.toPx() }
+    val headerReservedHeight = 68.dp
 
-                val createSource = remember { MutableInteractionSource() }
-                FilledTonalIconButton(
-                    onClick = onCreatePlaylist,
-                    shape = CircleShape,
-                    interactionSource = createSource,
-                    colors = IconButtonDefaults.filledTonalIconButtonColors(
-                        containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onSecondaryContainer
-                    ),
+    Box(modifier = modifier.fillMaxSize()) {
+        if (isLoading) {
+            PageContentLoadingBox(
+                testTag = "playlists_page_loading",
+                indicatorTestTag = "playlists_page_loading_indicator",
+                contentTopPadding = contentTopPadding,
+                contentBottomPadding = contentBottomPadding
+            )
+            return@Box
+        }
+
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .fillMaxWidth()
+                .zIndex(2f)
+                .padding(top = contentTopPadding, start = 16.dp, end = 16.dp)
+                .padding(vertical = 4.dp)
+                .onSizeChanged { size ->
+                    quickReturnState.updateHeaderHeightPx(size.height, topInsetPx)
+                }
+                .graphicsLayer {
+                    translationY = quickReturnState.offsetPx
+                }
+                .testTag("playlists_floating_header"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            if (orderedPlaylists.isNotEmpty()) {
+                CapsuleSearchField(
+                    query = searchQuery,
+                    onQueryChange = {
+                        searchQuery = it
+                        quickReturnState.resetToVisible()
+                    },
+                    placeholderText = stringResource(R.string.search_playlists_placeholder),
+                    containerTestTag = "playlists_search_bar",
+                    inputTestTag = "input_search_playlists",
+                    clearButtonTestTag = "btn_clear_search_playlists",
+                    shadowElevation = 6.dp,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(10.dp))
+            } else {
+                Column(
                     modifier = Modifier
-                        .size(48.dp)
-                        .springPress(scaleDown = 0.90f, interactionSource = createSource)
-                        .testTag("btn_create_playlist")
+                        .weight(1f)
+                        .padding(horizontal = 4.dp)
                 ) {
-                    Icon(
-                        imageVector = Icons.Default.Add,
-                        contentDescription = stringResource(R.string.playlist_create_action),
-                        modifier = Modifier.size(22.dp)
+                    Text(
+                        text = stringResource(R.string.playlists_title),
+                        style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = stringResource(R.string.playlists_count_format, orderedPlaylists.size),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
+
+            val createSource = remember { MutableInteractionSource() }
+            FilledTonalIconButton(
+                onClick = onCreatePlaylist,
+                shape = CircleShape,
+                interactionSource = createSource,
+                colors = IconButtonDefaults.filledTonalIconButtonColors(
+                    containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onSecondaryContainer
+                ),
+                modifier = Modifier
+                    .size(48.dp)
+                    .springPress(scaleDown = 0.90f, interactionSource = createSource)
+                    .shadow(elevation = 6.dp, shape = CircleShape, clip = false)
+                    .testTag("btn_create_playlist")
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Add,
+                    contentDescription = stringResource(R.string.playlist_create_action),
+                    modifier = Modifier.size(22.dp)
+                )
+            }
         }
+
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Fixed(2),
+            contentPadding = PaddingValues(
+                start = 16.dp,
+                end = 16.dp,
+                top = contentTopPadding + headerReservedHeight,
+                bottom = contentBottomPadding
+            ),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .onGloballyPositioned { gridCoords = it }
+                .nestedScroll(quickReturnState.nestedScrollConnection)
+                .testTag("playlists_lazy_grid")
+        ) {
 
         if (orderedPlaylists.isEmpty()) {
             item(
@@ -540,6 +580,7 @@ internal fun PlaylistsOverviewScreen(
                     )
                 }
             }
+        }
         }
     }
 }
@@ -876,17 +917,22 @@ internal fun PlaylistDetailScreen(
     onAddSongs: () -> Unit,
     onRenamePlaylist: (String) -> Unit = {},
     onUpdatePlaylistIcon: (String?) -> Unit = {},
+    onReorderSongs: (List<Song>) -> Unit = {},
     onSongClick: (Song) -> Unit,
     onRemoveSongFromPlaylist: (Song) -> Unit,
     onOpenPlayer: (() -> Unit)? = null,
     contentTopPadding: Dp,
     contentBottomPadding: Dp,
     isDarkTheme: Boolean,
+    isLoading: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val listState = rememberLazyListState()
     val focusManager = LocalFocusManager.current
     val searchFocusRequester = remember { FocusRequester() }
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+    val coroutineScope = rememberCoroutineScope()
 
     var revealedSongId by remember { mutableStateOf<Long?>(null) }
     var showRenameDialog by remember { mutableStateOf(false) }
@@ -898,8 +944,40 @@ internal fun PlaylistDetailScreen(
     val resolvedPlaylistIcon = remember(playlist.iconId) { PlaylistIconCatalog.resolveOrDefault(playlist.iconId) }
     val hasCustomNonDefaultIcon = playlist.iconId != null && resolvedPlaylistIcon.id != PlaylistIconCatalog.DEFAULT_ICON_ID
 
+    // Trạng thái sắp xếp bài hát bằng kéo thả dọc từ icon 4 chấm
+    var orderedSongs by remember(playlist.id) { mutableStateOf(playlist.songs) }
+    var pendingReorderedSongIds by remember(playlist.id) { mutableStateOf<List<Long>?>(null) }
+    var draggedSongId by remember(playlist.id) { mutableStateOf<Long?>(null) }
+    var droppingSongId by remember(playlist.id) { mutableStateOf<Long?>(null) }
+    val dropSnapAnim = remember(playlist.id) { Animatable(0f) }
+
+    var dragStartPointerWindowY by remember(playlist.id) { mutableFloatStateOf(0f) }
+    var currentPointerWindowY by remember(playlist.id) { mutableFloatStateOf(0f) }
+    var initialSlotTopInWindow by remember(playlist.id) { mutableFloatStateOf(0f) }
+    var draggedCardHeightPx by remember(playlist.id) { mutableFloatStateOf(0f) }
+
+    var listBoundsInWindow by remember { mutableStateOf(Rect.Zero) }
+    var headerBottomInWindow by remember { mutableFloatStateOf(0f) }
+    val slotBoundsInWindow = remember(playlist.id) { mutableStateMapOf<Long, Rect>() }
+    val handleCoordsMap = remember(playlist.id) { mutableStateMapOf<Long, LayoutCoordinates>() }
+
+    LaunchedEffect(playlist.songs) {
+        val pending = pendingReorderedSongIds
+        val incomingIds = playlist.songs.map { it.id }
+        if (pending != null) {
+            if (incomingIds == pending || incomingIds.toSet() != pending.toSet()) {
+                orderedSongs = playlist.songs
+                pendingReorderedSongIds = null
+            }
+        } else if (draggedSongId == null) {
+            orderedSongs = playlist.songs
+        }
+    }
+
     val currentRevealedId by rememberUpdatedState(revealedSongId)
     val currentIsSearchExpanded by rememberUpdatedState(isSearchExpanded)
+    val latestOnReorderSongs by rememberUpdatedState(onReorderSongs)
+    val latestOnSongClick by rememberUpdatedState(onSongClick)
 
     val collapseSearch = remember(focusManager) {
         {
@@ -928,20 +1006,115 @@ internal fun PlaylistDetailScreen(
         collapseSearch()
     }
 
-    val filteredSongs = remember(playlist.songs, searchQuery) {
+    val isSearching = searchQuery.trim().isNotEmpty()
+    val filteredSongs = remember(orderedSongs, searchQuery) {
         val trimmed = searchQuery.trim()
         if (trimmed.isEmpty()) {
-            playlist.songs
+            orderedSongs
         } else {
             val normalizedQuery = Song.normalizeForSearch(trimmed)
-            playlist.songs.filter { song ->
+            orderedSongs.filter { song ->
                 matchesSongSearchQuery(song, trimmed, normalizedQuery)
             }
         }
     }
+    val displayedSongs = if (isSearching) filteredSongs else orderedSongs
+
+    val itemSpacingPx = remember(density) { with(density) { 3.dp.toPx() } }
+    val computeClampedCardTop: () -> Float = {
+        val rawTop = initialSlotTopInWindow + (currentPointerWindowY - dragStartPointerWindowY)
+        if (listBoundsInWindow.height > 1f) {
+            var minTop = listBoundsInWindow.top
+            if (listState.firstVisibleItemIndex == 0 && headerBottomInWindow > 0f) {
+                minTop = maxOf(minTop, headerBottomInWindow + itemSpacingPx)
+            }
+            if (!listState.canScrollBackward) {
+                val firstSlotTop = orderedSongs.firstOrNull()?.id?.let { slotBoundsInWindow[it]?.top }
+                if (firstSlotTop != null) {
+                    minTop = maxOf(minTop, firstSlotTop)
+                }
+            }
+            var maxBottom = listBoundsInWindow.bottom
+            if (!listState.canScrollForward) {
+                val lastSlotBottom = orderedSongs.lastOrNull()?.id?.let { slotBoundsInWindow[it]?.bottom }
+                if (lastSlotBottom != null) {
+                    maxBottom = minOf(maxBottom, lastSlotBottom)
+                }
+            }
+            val maxTop = (maxBottom - draggedCardHeightPx).coerceAtLeast(minTop)
+            rawTop.coerceIn(minTop, maxTop)
+        } else {
+            rawTop
+        }
+    }
+
+    val trySwapAtDraggedPosition: (Long) -> Unit = { activeId ->
+        val currentList = orderedSongs
+        val currentIdx = currentList.indexOfFirst { it.id == activeId }
+        if (currentIdx != -1) {
+            val clampedTop = computeClampedCardTop()
+            val clampedBottom = clampedTop + draggedCardHeightPx
+            val draggedCenterY = clampedTop + draggedCardHeightPx * 0.5f
+
+            var targetIdx = currentIdx
+            for (i in (currentIdx + 1)..currentList.lastIndex) {
+                val rect = slotBoundsInWindow[currentList[i].id] ?: continue
+                if (draggedCenterY > rect.center.y + 4f || clampedBottom >= rect.bottom - 2f) {
+                    targetIdx = i
+                }
+            }
+            if (targetIdx == currentIdx) {
+                for (i in (currentIdx - 1) downTo 0) {
+                    val rect = slotBoundsInWindow[currentList[i].id] ?: continue
+                    if (draggedCenterY < rect.center.y - 4f || clampedTop <= rect.top + 2f) {
+                        targetIdx = i
+                    }
+                }
+            }
+
+            if (targetIdx != currentIdx) {
+                val mutable = currentList.toMutableList()
+                val moved = mutable.removeAt(currentIdx)
+                mutable.add(targetIdx, moved)
+                orderedSongs = mutable
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            }
+        }
+    }
+
+    // Tự động cuộn danh sách mượt mà khi kéo bài hát chạm mép trên/dưới (chỉ chạy trong lúc đang kéo)
+    LaunchedEffect(draggedSongId) {
+        val activeId = draggedSongId ?: return@LaunchedEffect
+        val edgeZonePx = with(density) { 56.dp.toPx() }
+        val maxScrollStepPx = with(density) { 10.dp.toPx() }
+        while (isActive && draggedSongId == activeId) {
+            val bounds = listBoundsInWindow
+            if (bounds.height > 1f) {
+                val pointerY = currentPointerWindowY
+                val topZoneEnd = bounds.top + edgeZonePx
+                val bottomZoneStart = bounds.bottom - edgeZonePx
+                val scrollDelta = when {
+                    pointerY < topZoneEnd && listState.canScrollBackward -> {
+                        val ratio = ((topZoneEnd - pointerY) / edgeZonePx).coerceIn(0.25f, 1f)
+                        -maxScrollStepPx * ratio
+                    }
+                    pointerY > bottomZoneStart && listState.canScrollForward -> {
+                        val ratio = ((pointerY - bottomZoneStart) / edgeZonePx).coerceIn(0.25f, 1f)
+                        maxScrollStepPx * ratio
+                    }
+                    else -> 0f
+                }
+                if (scrollDelta != 0f) {
+                    listState.scrollBy(scrollDelta)
+                    trySwapAtDraggedPosition(activeId)
+                }
+            }
+            delay(16L)
+        }
+    }
 
     LaunchedEffect(listState.isScrollInProgress) {
-        if (listState.isScrollInProgress) {
+        if (listState.isScrollInProgress && draggedSongId == null) {
             revealedSongId = null
         }
     }
@@ -967,6 +1140,7 @@ internal fun PlaylistDetailScreen(
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                     val downPos = down.position
+                    val revealedAtDown = currentRevealedId
                     val touchSlop = viewConfiguration.touchSlop
                     var maxSlopExceeded = false
                     var lastPos = downPos
@@ -979,8 +1153,11 @@ internal fun PlaylistDetailScreen(
                             maxSlopExceeded = true
                         }
                         if (!change.pressed) {
-                            if (!maxSlopExceeded) {
-                                revealedSongId = null
+                            if (!maxSlopExceeded && draggedSongId == null) {
+                                // Chỉ đóng nút xóa đang mở khi chạm ra ngoài; không đóng nút vừa mới mở do nhấn giữ
+                                if (revealedAtDown != null && revealedAtDown == currentRevealedId) {
+                                    revealedSongId = null
+                                }
                                 if (currentIsSearchExpanded) {
                                     val rootCoords = screenRootCoords?.takeIf { it.isAttached }
                                     val tapInRoot = rootCoords?.localToRoot(lastPos) ?: lastPos
@@ -995,8 +1172,19 @@ internal fun PlaylistDetailScreen(
                 }
             }
     ) {
+        if (isLoading) {
+            PageContentLoadingBox(
+                testTag = "playlists_page_loading",
+                indicatorTestTag = "playlists_page_loading_indicator",
+                contentTopPadding = contentTopPadding,
+                contentBottomPadding = contentBottomPadding
+            )
+            return@Box
+        }
+
         LazyColumn(
             state = listState,
+            userScrollEnabled = draggedSongId == null,
             contentPadding = PaddingValues(
                 start = 16.dp,
                 end = 16.dp,
@@ -1006,12 +1194,22 @@ internal fun PlaylistDetailScreen(
             verticalArrangement = Arrangement.spacedBy(3.dp),
             modifier = Modifier
                 .fillMaxSize()
+                .onGloballyPositioned { coords ->
+                    if (coords.isAttached) {
+                        listBoundsInWindow = coords.boundsInWindow()
+                    }
+                }
                 .testTag("playlist_detail_lazy_column")
         ) {
             item(key = "playlist_detail_header", contentType = "header") {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .onGloballyPositioned { coords ->
+                            if (coords.isAttached) {
+                                headerBottomInWindow = coords.boundsInWindow().bottom
+                            }
+                        }
                         .padding(bottom = 10.dp)
                 ) {
                     val actionBtnSize = 48.dp
@@ -1320,7 +1518,7 @@ internal fun PlaylistDetailScreen(
                         )
                     }
                 }
-            } else if (filteredSongs.isEmpty()) {
+            } else if (displayedSongs.isEmpty()) {
                 item(key = "playlist_detail_no_search_results", contentType = "empty_search") {
                     Box(
                         contentAlignment = Alignment.Center,
@@ -1339,21 +1537,30 @@ internal fun PlaylistDetailScreen(
                 }
             } else {
                 itemsIndexed(
-                    items = filteredSongs,
+                    items = displayedSongs,
                     key = { _, song -> song.id },
                     contentType = { _, _ -> "playlist_song_card" }
                 ) { index, song ->
                     val isCurrentSong = playbackState.currentSong?.id == song.id
                     val isFirst = index == 0
-                    val isLast = index == filteredSongs.lastIndex
+                    val isLast = index == displayedSongs.lastIndex
                     val isActionsRevealed = revealedSongId == song.id
+                    val isDragged = draggedSongId == song.id
+                    val isReorderEnabled = !isSearching && displayedSongs.size > 1
+
+                    DisposableEffect(song.id) {
+                        onDispose {
+                            slotBoundsInWindow.remove(song.id)
+                            handleCoordsMap.remove(song.id)
+                        }
+                    }
 
                     val onCardClick = remember(song, playlist.id) {
                         {
                             if (currentRevealedId != null) {
                                 revealedSongId = null
                             } else {
-                                onSongClick(song)
+                                latestOnSongClick(song)
                             }
                         }
                     }
@@ -1371,25 +1578,143 @@ internal fun PlaylistDetailScreen(
                     }
                     val onCardRemove = remember(song.id) { { onRemoveSongFromPlaylist(song) } }
 
-                    UniformSongCard(
-                        song = song,
-                        songIndex = index + 1,
-                        isHighlighted = isCurrentSong,
-                        isPlaying = isCurrentSong && playbackState.isPlaying,
-                        isFirst = isFirst,
-                        isLast = isLast,
-                        isActionsRevealed = isActionsRevealed,
-                        onToggleActions = onCardToggleActions,
-                        onCloseActions = onCardCloseActions,
-                        onClick = onCardClick,
-                        onRemoveFromPlaylist = onCardRemove,
-                        onOpenPlayer = onOpenPlayer,
-                        isDarkTheme = isDarkTheme,
-                        modifier = Modifier
+                    val itemWrapperModifier = if (isDragged) {
+                        Modifier.zIndex(10f)
+                    } else {
+                        Modifier
+                            .zIndex(if (droppingSongId == song.id) 5f else 0f)
+                            .animateItem(
+                                placementSpec = spring(
+                                    dampingRatio = 0.72f,
+                                    stiffness = Spring.StiffnessMediumLow
+                                )
+                            )
+                    }
+
+                    val dragHandleGestureModifier = Modifier
+                        .onGloballyPositioned { coords ->
+                            if (coords.isAttached) {
+                                handleCoordsMap[song.id] = coords
+                            }
+                        }
+                        .pointerInput(playlist.id, song.id, isReorderEnabled) {
+                            if (!isReorderEnabled) return@pointerInput
+                            detectDragGesturesAfterLongPress(
+                                onDragStart = { startOffset ->
+                                    if (draggedSongId != null && draggedSongId != song.id) {
+                                        return@detectDragGesturesAfterLongPress
+                                    }
+                                    val hCoords = handleCoordsMap[song.id]?.takeIf { it.isAttached }
+                                        ?: return@detectDragGesturesAfterLongPress
+                                    val slotRect = slotBoundsInWindow[song.id]
+                                        ?: return@detectDragGesturesAfterLongPress
+                                    val startWin = hCoords.localToWindow(startOffset)
+                                    revealedSongId = null
+                                    droppingSongId = null
+                                    pendingReorderedSongIds = null
+                                    dragStartPointerWindowY = startWin.y
+                                    currentPointerWindowY = startWin.y
+                                    initialSlotTopInWindow = slotRect.top
+                                    draggedCardHeightPx = slotRect.height
+                                    draggedSongId = song.id
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                },
+                                onDrag = { change, dragAmount ->
+                                    if (draggedSongId != song.id) {
+                                        return@detectDragGesturesAfterLongPress
+                                    }
+                                    change.consume()
+                                    val hCoords = handleCoordsMap[song.id]?.takeIf { it.isAttached }
+                                    val pointerWinY = if (hCoords != null) {
+                                        hCoords.localToWindow(change.position).y
+                                    } else {
+                                        currentPointerWindowY + dragAmount.y
+                                    }
+                                    currentPointerWindowY = pointerWinY
+                                    trySwapAtDraggedPosition(song.id)
+                                },
+                                onDragEnd = {
+                                    if (draggedSongId == song.id) {
+                                        val finalSongs = orderedSongs
+                                        val slotTopNow = slotBoundsInWindow[song.id]?.top ?: initialSlotTopInWindow
+                                        val releaseOffsetY = computeClampedCardTop() - slotTopNow
+                                        draggedSongId = null
+                                        droppingSongId = song.id
+                                        coroutineScope.launch {
+                                            dropSnapAnim.snapTo(releaseOffsetY)
+                                            dropSnapAnim.animateTo(
+                                                targetValue = 0f,
+                                                animationSpec = spring(
+                                                    dampingRatio = 0.72f,
+                                                    stiffness = Spring.StiffnessMedium
+                                                )
+                                            )
+                                            if (droppingSongId == song.id) {
+                                                droppingSongId = null
+                                            }
+                                        }
+                                        val finalIds = finalSongs.map { it.id }
+                                        if (finalIds != playlist.songs.map { it.id }) {
+                                            pendingReorderedSongIds = finalIds
+                                            latestOnReorderSongs(finalSongs)
+                                        }
+                                    }
+                                },
+                                onDragCancel = {
+                                    if (draggedSongId == song.id) {
+                                        draggedSongId = null
+                                        droppingSongId = null
+                                        pendingReorderedSongIds = null
+                                        orderedSongs = playlist.songs
+                                    }
+                                }
+                            )
+                        }
+
+                    Box(
+                        modifier = itemWrapperModifier
                             .fillMaxWidth()
-                            .then(if (isLast) Modifier.padding(bottom = 6.dp) else Modifier)
-                            .testTag("playlist_song_card_${song.id}")
-                    )
+                            .onGloballyPositioned { coords ->
+                                if (coords.isAttached) {
+                                    slotBoundsInWindow[song.id] = coords.boundsInWindow()
+                                }
+                            }
+                    ) {
+                        UniformSongCard(
+                            song = song,
+                            songIndex = index + 1,
+                            isHighlighted = isCurrentSong,
+                            isPlaying = isCurrentSong && playbackState.isPlaying,
+                            isFirst = isFirst,
+                            isLast = isLast,
+                            isActionsRevealed = isActionsRevealed,
+                            onToggleActions = onCardToggleActions,
+                            onCloseActions = onCardCloseActions,
+                            onClick = onCardClick,
+                            onRemoveFromPlaylist = onCardRemove,
+                            onOpenPlayer = onOpenPlayer,
+                            isDragged = isDragged,
+                            showDragHandle = true,
+                            isDragHandleEnabled = isReorderEnabled,
+                            dragHandleModifier = dragHandleGestureModifier,
+                            isDarkTheme = isDarkTheme,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .graphicsLayer {
+                                    translationX = 0f
+                                    translationY = when {
+                                        isDragged -> {
+                                            val currentSlotTop = slotBoundsInWindow[song.id]?.top ?: initialSlotTopInWindow
+                                            computeClampedCardTop() - currentSlotTop
+                                        }
+                                        droppingSongId == song.id -> dropSnapAnim.value
+                                        else -> 0f
+                                    }
+                                }
+                                .then(if (isLast) Modifier.padding(bottom = 6.dp) else Modifier)
+                                .testTag("playlist_song_card_${song.id}")
+                        )
+                    }
                 }
             }
         }

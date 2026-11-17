@@ -83,6 +83,8 @@ class PlaybackManager private constructor(private val appContext: Context) {
     val virtualizerStrength: StateFlow<Int> = _virtualizerStrength.asStateFlow()
     private var lastPersistedVirtualizer = _virtualizerStrength.value
 
+    private var audioDeviceCallback: android.media.AudioDeviceCallback? = null
+
     init {
         clearCommunicationRouting()
         restorePersistedState()
@@ -91,9 +93,9 @@ class PlaybackManager private constructor(private val appContext: Context) {
     }
 
     private fun registerAudioDeviceCallback() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioDeviceCallback == null) {
             try {
-                audioManager?.registerAudioDeviceCallback(object : android.media.AudioDeviceCallback() {
+                val callback = object : android.media.AudioDeviceCallback() {
                     override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) {
                         updateHeadsetState()
                     }
@@ -101,7 +103,9 @@ class PlaybackManager private constructor(private val appContext: Context) {
                     override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) {
                         updateHeadsetState()
                     }
-                }, null)
+                }
+                audioDeviceCallback = callback
+                audioManager?.registerAudioDeviceCallback(callback, null)
             } catch (_: Throwable) {
                 // Device callback not supported
             }
@@ -157,14 +161,28 @@ class PlaybackManager private constructor(private val appContext: Context) {
 
     fun setSongs(songs: List<Song>) {
         synchronized(playlistLock) {
+            if (_songs.value === songs || (_songs.value.size == songs.size && _songs.value == songs)) {
+                if (orderedSongsCache.isNotEmpty() || songs.isEmpty()) {
+                    return@synchronized
+                }
+            }
             _songs.value = songs
-            songsMap = songs.associateBy { it.id }
+            val newMap = HashMap<Long, Song>(songs.size * 2)
+            for (i in songs.indices) {
+                val s = songs[i]
+                newMap[s.id] = s
+            }
+            songsMap = newMap
             if (activePlaylistId == null) {
                 orderedSongsCache = songs
             } else {
-                orderedSongsCache = orderedSongsCache.mapNotNull { songsMap[it.id] }
+                orderedSongsCache = orderedSongsCache.mapNotNull { newMap[it.id] }
             }
-            orderedSongIdsCache = orderedSongsCache.mapTo(HashSet(orderedSongsCache.size)) { it.id }
+            val newIds = HashSet<Long>(orderedSongsCache.size * 2)
+            for (i in orderedSongsCache.indices) {
+                newIds.add(orderedSongsCache[i].id)
+            }
+            orderedSongIdsCache = newIds
             _orderedSongs.value = orderedSongsCache
             if (shuffleQueue.size != orderedSongsCache.size) {
                 rebuildShuffleQueueLocked()
@@ -222,8 +240,12 @@ class PlaybackManager private constructor(private val appContext: Context) {
             } else {
                 val updatedQueue = matched.songs
                 if (!hasSameSongIds(orderedSongsCache, updatedQueue)) {
+                    val membershipChanged = orderedSongsCache.size != updatedQueue.size ||
+                        updatedQueue.any { !orderedSongIdsCache.contains(it.id) }
                     orderedSongsCache = updatedQueue
-                    rebuildShuffleQueueLocked(excludeSongId = currentSong?.id)
+                    if (membershipChanged || shuffleQueue.size != updatedQueue.size) {
+                        rebuildShuffleQueueLocked(excludeSongId = currentSong?.id)
+                    }
                     if (updatedQueue.isEmpty()) {
                         if (_playbackState.value.isPlaying) {
                             shouldPauseEmptyPlaylist = true
@@ -247,6 +269,21 @@ class PlaybackManager private constructor(private val appContext: Context) {
             sendServiceCommand(MusicPlaybackService.ACTION_PAUSE)
         } else {
             songToAutoPlay?.let { playSongInternal(it) }
+        }
+    }
+
+    /**
+     * Cập nhật ngay lập tức hàng đợi phát khi người dùng kéo thả sắp xếp lại bài hát trong danh sách phát.
+     * Bảo toàn tuyệt đối bài hát đang phát và vị trí giây hiện tại (không nạp lại hay nhảy về đầu danh sách).
+     */
+    fun reorderActivePlaylistSongs(playlistId: Long, reorderedSongs: List<Song>) {
+        if (reorderedSongs.isEmpty()) return
+        synchronized(playlistLock) {
+            if (activePlaylistId != playlistId) return
+            if (hasSameSongIds(orderedSongsCache, reorderedSongs)) return
+            orderedSongsCache = reorderedSongs
+            orderedSongIdsCache = reorderedSongs.mapTo(HashSet(reorderedSongs.size)) { it.id }
+            _orderedSongs.value = orderedSongsCache
         }
     }
 
@@ -562,7 +599,9 @@ class PlaybackManager private constructor(private val appContext: Context) {
     }
 
     fun updateProgress(currentMs: Long, durationMs: Long) {
-        _currentPositionMs.value = currentMs
+        if (_currentPositionMs.value != currentMs) {
+            _currentPositionMs.value = currentMs
+        }
         if (durationMs > 0 && durationMs != _playbackState.value.durationMs) {
             _playbackState.update { it.copy(durationMs = durationMs) }
         }

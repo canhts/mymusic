@@ -215,32 +215,6 @@ internal fun BottomNowPlayingPill(
     val queueNameText = activePlaylistName?.takeIf { it.isNotBlank() }
         ?: stringResource(R.string.now_playing_library_queue)
 
-    // Thu thập vị trí phát theo từng giây (cùng trạng thái kéo tua) để định dạng "MM:SS - MM:SS • Tên danh sách"
-    val positionSecFlow = remember(currentPositionMsFlow) {
-        currentPositionMsFlow
-            .map { it / 1000L }
-            .distinctUntilChanged()
-    }
-    val currentPositionSec by positionSecFlow.collectAsStateWithLifecycle(
-        initialValue = currentPositionMsFlow.value / 1000L
-    )
-    val safeDurationMs = effectiveDuration.coerceAtLeast(0L)
-    val totalSec = safeDurationMs / 1000L
-    val displaySec = if (isDraggingProgressState.value && safeDurationMs > 0L) {
-        ((dragFractionState.floatValue * safeDurationMs).toLong().coerceIn(0L, safeDurationMs)) / 1000L
-    } else {
-        currentPositionSec.coerceIn(0L, totalSec.coerceAtLeast(1L))
-    }
-    val (curTimeText, totalTimeText) = remember(displaySec, totalSec) {
-        formatTimePair(displaySec, totalSec)
-    }
-    val timeAndQueueText = stringResource(
-        R.string.now_playing_time_queue_format,
-        curTimeText,
-        totalTimeText,
-        queueNameText
-    )
-
     // Màu tương phản cao đồng nhất cho cả nút Play/Pause và Lặp lại (không đổi màu nền, không viền)
     val controlContainerColor = MaterialTheme.colorScheme.surfaceContainerLowest
     val playPauseContentColor = MaterialTheme.colorScheme.primary
@@ -263,6 +237,11 @@ internal fun BottomNowPlayingPill(
         MaterialTheme.colorScheme.surfaceContainerLowest
     }
 
+    val bounceScaleProvider = remember(bounceScale) { { bounceScale.value } }
+    val collapseScaleXProvider = remember(collapseScaleX) { { collapseScaleX.value } }
+    val collapseScaleYProvider = remember(collapseScaleY) { { collapseScaleY.value } }
+    val modeFollowScaleProvider = remember(modeFollowScale) { { modeFollowScale.value } }
+
     if (expandedWidthOverrideDp != null) {
         val totalAvailableWidth = expandedWidthOverrideDp.coerceAtMost(352.dp)
         val expandedPillWidthDp = (totalAvailableWidth - repeatCircleSize - repeatCircleGap).coerceAtLeast(82.dp)
@@ -282,10 +261,10 @@ internal fun BottomNowPlayingPill(
             collapseFraction = collapseFraction,
             pillWidthDp = pillWidthDp,
             playPauseWidthDp = playPauseWidthDp,
-            bounceScale = bounceScale.value,
-            collapseScaleX = collapseScaleX.value,
-            collapseScaleY = collapseScaleY.value,
-            modeFollowScale = modeFollowScale.value,
+            bounceScaleProvider = bounceScaleProvider,
+            collapseScaleXProvider = collapseScaleXProvider,
+            collapseScaleYProvider = collapseScaleYProvider,
+            modeFollowScaleProvider = modeFollowScaleProvider,
             shadowColor = shadowColor,
             contentColor = contentColor,
             onPrimaryColor = onPrimaryColor,
@@ -295,7 +274,8 @@ internal fun BottomNowPlayingPill(
             repeatCircleGap = repeatCircleGap,
             playPauseContentColor = playPauseContentColor,
             modeContentColor = modeContentColor,
-            timeAndQueueText = timeAndQueueText,
+            queueNameText = queueNameText,
+            currentPositionMsFlow = currentPositionMsFlow,
             isDarkTheme = isDarkTheme,
             waveSyncState = waveSyncState,
             cardWidthPxHolder = cardWidthPxHolder,
@@ -341,10 +321,10 @@ internal fun BottomNowPlayingPill(
                 collapseFraction = collapseFraction,
                 pillWidthDp = pillWidthDp,
                 playPauseWidthDp = playPauseWidthDp,
-                bounceScale = bounceScale.value,
-                collapseScaleX = collapseScaleX.value,
-                collapseScaleY = collapseScaleY.value,
-                modeFollowScale = modeFollowScale.value,
+                bounceScaleProvider = bounceScaleProvider,
+                collapseScaleXProvider = collapseScaleXProvider,
+                collapseScaleYProvider = collapseScaleYProvider,
+                modeFollowScaleProvider = modeFollowScaleProvider,
                 shadowColor = shadowColor,
                 contentColor = contentColor,
                 onPrimaryColor = onPrimaryColor,
@@ -354,7 +334,8 @@ internal fun BottomNowPlayingPill(
                 repeatCircleGap = repeatCircleGap,
                 playPauseContentColor = playPauseContentColor,
                 modeContentColor = modeContentColor,
-                timeAndQueueText = timeAndQueueText,
+                queueNameText = queueNameText,
+                currentPositionMsFlow = currentPositionMsFlow,
                 isDarkTheme = isDarkTheme,
                 waveSyncState = waveSyncState,
                 cardWidthPxHolder = cardWidthPxHolder,
@@ -386,10 +367,10 @@ private fun BottomNowPlayingPillWithExternalRepeat(
     collapseFraction: Float,
     pillWidthDp: androidx.compose.ui.unit.Dp,
     playPauseWidthDp: androidx.compose.ui.unit.Dp,
-    bounceScale: Float,
-    collapseScaleX: Float,
-    collapseScaleY: Float,
-    modeFollowScale: Float,
+    bounceScaleProvider: () -> Float,
+    collapseScaleXProvider: () -> Float,
+    collapseScaleYProvider: () -> Float,
+    modeFollowScaleProvider: () -> Float,
     shadowColor: Color,
     contentColor: Color,
     onPrimaryColor: Color,
@@ -399,7 +380,8 @@ private fun BottomNowPlayingPillWithExternalRepeat(
     repeatCircleGap: androidx.compose.ui.unit.Dp,
     playPauseContentColor: Color,
     modeContentColor: Color,
-    timeAndQueueText: String,
+    queueNameText: String,
+    currentPositionMsFlow: StateFlow<Long>,
     isDarkTheme: Boolean,
     waveSyncState: WaveSyncState,
     cardWidthPxHolder: FloatArray,
@@ -425,15 +407,16 @@ private fun BottomNowPlayingPillWithExternalRepeat(
             collapseFraction = collapseFraction,
             pillWidthDp = pillWidthDp,
             playPauseWidthDp = playPauseWidthDp,
-            bounceScale = bounceScale,
-            collapseScaleX = collapseScaleX,
-            collapseScaleY = collapseScaleY,
+            bounceScaleProvider = bounceScaleProvider,
+            collapseScaleXProvider = collapseScaleXProvider,
+            collapseScaleYProvider = collapseScaleYProvider,
             shadowColor = shadowColor,
             contentColor = contentColor,
             onPrimaryColor = onPrimaryColor,
             controlContainerColor = controlContainerColor,
             playPauseContentColor = playPauseContentColor,
-            timeAndQueueText = timeAndQueueText,
+            queueNameText = queueNameText,
+            currentPositionMsFlow = currentPositionMsFlow,
             isDarkTheme = isDarkTheme,
             waveSyncState = waveSyncState,
             cardWidthPxHolder = cardWidthPxHolder,
@@ -449,49 +432,24 @@ private fun BottomNowPlayingPillWithExternalRepeat(
         Spacer(modifier = Modifier.width(repeatCircleGap))
 
         val playModeSource = remember { MutableInteractionSource() }
-        Surface(
-            shape = CircleShape,
-            color = repeatContainerColor,
-            contentColor = modeContentColor,
-            tonalElevation = 4.dp,
-            shadowElevation = 0.dp,
-            border = null,
-            modifier = Modifier
-                .size(repeatCircleSize)
-                .graphicsLayer {
-                    val combinedScale = bounceScale * modeFollowScale
-                    scaleX = combinedScale
-                    scaleY = combinedScale
-                }
-                .radiantShadow(
-                    color = shadowColor,
-                    blurRadius = 14.dp,
-                    offsetY = 3.dp,
-                    isCircle = true
-                )
-                .bottomControlBounce(
-                    scaleDown = 0.84f,
-                    dipY = 2.dp,
-                    interactionSource = playModeSource
-                )
-                .clip(CircleShape)
-                .clickable(
-                    interactionSource = playModeSource,
-                    indication = null,
-                    onClick = onCyclePlayMode
-                )
-                .testTag("btn_play_mode")
+        val glassPalette = rememberLiquidGlassPalette(isDarkTheme = isDarkTheme)
+        val isModeToggled = playMode != PlayMode.REPEAT_ALL
+        val activeIconTint = if (isModeToggled) Color.White else modeContentColor
+        LiquidGlassCircleButton(
+            onClick = onCyclePlayMode,
+            palette = glassPalette,
+            size = repeatCircleSize,
+            isActive = isModeToggled,
+            shadowColor = shadowColor,
+            interactionSource = playModeSource,
+            extraScaleProvider = { bounceScaleProvider() * modeFollowScaleProvider() },
+            testTag = "btn_play_mode"
         ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.fillMaxSize()
-            ) {
-                AnimatedPlayModeIcon(
-                    playMode = playMode,
-                    tint = modeContentColor,
-                    modifier = Modifier.size(21.dp)
-                )
-            }
+            AnimatedPlayModeIcon(
+                playMode = playMode,
+                tint = activeIconTint,
+                modifier = Modifier.size(21.dp)
+            )
         }
     }
 }
@@ -505,15 +463,16 @@ private fun BottomNowPlayingPillSurface(
     collapseFraction: Float,
     pillWidthDp: androidx.compose.ui.unit.Dp,
     playPauseWidthDp: androidx.compose.ui.unit.Dp,
-    bounceScale: Float,
-    collapseScaleX: Float,
-    collapseScaleY: Float,
+    bounceScaleProvider: () -> Float,
+    collapseScaleXProvider: () -> Float,
+    collapseScaleYProvider: () -> Float,
     shadowColor: Color,
     contentColor: Color,
     onPrimaryColor: Color,
     controlContainerColor: Color,
     playPauseContentColor: Color,
-    timeAndQueueText: String,
+    queueNameText: String,
+    currentPositionMsFlow: StateFlow<Long>,
     isDarkTheme: Boolean,
     waveSyncState: WaveSyncState,
     cardWidthPxHolder: FloatArray,
@@ -538,8 +497,9 @@ private fun BottomNowPlayingPillSurface(
             .width(pillWidthDp)
             .height(52.dp)
                 .graphicsLayer {
-                    scaleX = bounceScale * collapseScaleX
-                    scaleY = bounceScale * collapseScaleY
+                    val bounce = bounceScaleProvider()
+                    scaleX = bounce * collapseScaleXProvider()
+                    scaleY = bounce * collapseScaleYProvider()
                 }
                 .radiantShadow(
                     color = shadowColor,
@@ -700,29 +660,18 @@ private fun BottomNowPlayingPillSurface(
                                     .testTag("bottom_now_playing_title")
                             )
 
-                            Text(
-                                text = timeAndQueueText,
-                                style = MaterialTheme.typography.bodySmall.copy(
-                                    fontSize = 11.sp,
-                                    lineHeight = 14.sp,
-                                    fontFeatureSettings = "tnum"
-                                ),
-                                color = contentColor.copy(alpha = 0.86f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Clip,
+                            BottomPillTimeAndQueueText(
+                                queueNameText = queueNameText,
+                                currentPositionMsFlow = currentPositionMsFlow,
+                                durationMs = currentEffectiveDuration,
+                                isDraggingState = isDraggingProgressState,
+                                dragFractionState = dragFractionState,
+                                contentColor = contentColor,
+                                coveredColor = onPrimaryColor,
+                                isDarkTheme = isDarkTheme,
+                                waveSyncState = waveSyncState,
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .waveProgressMask(
-                                        waveSyncState = waveSyncState,
-                                        isDarkTheme = isDarkTheme,
-                                        coveredColor = onPrimaryColor
-                                    )
-                                    .basicMarquee(
-                                        iterations = Int.MAX_VALUE,
-                                        repeatDelayMillis = 1800,
-                                        initialDelayMillis = 1500,
-                                        velocity = 28.dp
-                                    )
                                     .testTag("bottom_now_playing_queue")
                             )
                         }
@@ -830,4 +779,68 @@ private fun BottomNowPlayingPillSurface(
             }
         }
     }
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun BottomPillTimeAndQueueText(
+    queueNameText: String,
+    currentPositionMsFlow: StateFlow<Long>,
+    durationMs: Long,
+    isDraggingState: androidx.compose.runtime.State<Boolean>,
+    dragFractionState: androidx.compose.runtime.FloatState,
+    contentColor: Color,
+    coveredColor: Color,
+    isDarkTheme: Boolean,
+    waveSyncState: WaveSyncState,
+    modifier: Modifier = Modifier
+) {
+    val positionSecFlow = remember(currentPositionMsFlow) {
+        currentPositionMsFlow
+            .map { it / 1000L }
+            .distinctUntilChanged()
+    }
+    val currentPositionSec by positionSecFlow.collectAsStateWithLifecycle(
+        initialValue = currentPositionMsFlow.value / 1000L
+    )
+    val safeDurationMs = durationMs.coerceAtLeast(0L)
+    val totalSec = safeDurationMs / 1000L
+    val displaySec = if (isDraggingState.value && safeDurationMs > 0L) {
+        ((dragFractionState.floatValue * safeDurationMs).toLong().coerceIn(0L, safeDurationMs)) / 1000L
+    } else {
+        currentPositionSec.coerceIn(0L, totalSec.coerceAtLeast(1L))
+    }
+    val (curTimeText, totalTimeText) = remember(displaySec, totalSec) {
+        formatTimePair(displaySec, totalSec)
+    }
+    val timeAndQueueText = stringResource(
+        R.string.now_playing_time_queue_format,
+        curTimeText,
+        totalTimeText,
+        queueNameText
+    )
+
+    Text(
+        text = timeAndQueueText,
+        style = MaterialTheme.typography.bodySmall.copy(
+            fontSize = 11.sp,
+            lineHeight = 14.sp,
+            fontFeatureSettings = "tnum"
+        ),
+        color = contentColor.copy(alpha = 0.86f),
+        maxLines = 1,
+        overflow = TextOverflow.Clip,
+        modifier = modifier
+            .waveProgressMask(
+                waveSyncState = waveSyncState,
+                isDarkTheme = isDarkTheme,
+                coveredColor = coveredColor
+            )
+            .basicMarquee(
+                iterations = Int.MAX_VALUE,
+                repeatDelayMillis = 1800,
+                initialDelayMillis = 1500,
+                velocity = 28.dp
+            )
+    )
+}
 

@@ -17,7 +17,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.R
-import com.example.data.LyricsRepository
 import com.example.data.PlaylistRepository
 import com.example.data.SongAudioAnalyzer
 import com.example.data.SongRepository
@@ -25,8 +24,6 @@ import com.example.data.SongSpectrumProfile
 import com.example.data.StorageOpResult
 import com.example.data.local.AppDatabase
 import com.example.model.AudioOutputDevice
-import com.example.model.LyricsUiState
-import com.example.model.OfflineModelState
 import com.example.model.PlaybackState
 import com.example.model.Playlist
 import com.example.model.Song
@@ -43,10 +40,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.collectLatest
-import kotlinx.coroutines.flow.distinctUntilChangedBy
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -57,10 +54,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val database = AppDatabase.getInstance(application)
     private val repository = SongRepository(application)
     private val playlistRepository = PlaylistRepository(database.playlistDao())
-    private val lyricsRepository = LyricsRepository(
-        context = application,
-        lyricsCacheDao = database.lyricsCacheDao()
-    )
     private val songAudioAnalyzer = SongAudioAnalyzer(
         appContext = application,
         scope = viewModelScope
@@ -152,6 +145,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isScanning = MutableStateFlow(true)
     val isScanning: StateFlow<Boolean> = _isScanning.asStateFlow()
 
+    private val _isPlaylistsLoading = MutableStateFlow(true)
+    val isPlaylistsLoading: StateFlow<Boolean> = _isPlaylistsLoading.asStateFlow()
+
     val songs: StateFlow<List<Song>> = playbackManager.songs
     val activeQueueSongs: StateFlow<List<Song>> = playbackManager.orderedSongs
     val playbackState: StateFlow<PlaybackState> = playbackManager.playbackState
@@ -162,12 +158,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val vocalStrength: StateFlow<Int> = playbackManager.vocalStrength
     val virtualizerStrength: StateFlow<Int> = playbackManager.virtualizerStrength
 
-    val lyricsUiState: StateFlow<LyricsUiState> = lyricsRepository.uiState
-    val offlineModelState: StateFlow<OfflineModelState> = lyricsRepository.offlineModelState
     val audioSpectrumProfile: StateFlow<SongSpectrumProfile?> = songAudioAnalyzer.currentProfile
 
     val playlists: StateFlow<List<Playlist>> = playlistRepository
         .observePlaylistsWithSongs(songs)
+        .onEach { _isPlaylistsLoading.value = false }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
@@ -185,9 +180,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         .flowOn(Dispatchers.Default)
         .stateIn(
             scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5000),
+            started = SharingStarted.Eagerly,
             initialValue = emptyList()
         )
+
+    val isInitialDataReady: StateFlow<Boolean> = combine(
+        isScanning,
+        isPlaylistsLoading,
+        hasPermission
+    ) { scanning, playlistsLoading, perm ->
+        val songsReady = !perm || !scanning
+        val playlistsReady = !playlistsLoading
+        songsReady && playlistsReady
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.Eagerly,
+        initialValue = false
+    )
 
     private val _userMessage = MutableStateFlow<String?>(null)
     val userMessage: StateFlow<String?> = _userMessage.asStateFlow()
@@ -196,50 +205,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val permissionIntentSender: StateFlow<IntentSender?> = _permissionIntentSender.asStateFlow()
 
     private var songsJob: Job? = null
-    private var lyricsJob: Job? = null
     private var pendingOperation: (() -> Unit)? = null
     private val storageMutex = Mutex()
     private val isExiting = AtomicBoolean(false)
 
     init {
-        lyricsRepository.setLocale(_appLanguage.value.toLocale())
+        // Pre-warm bộ nhớ đệm icon danh sách phát và tài nguyên ngôn ngữ ngay khi khởi tạo
+        PlaylistIconCatalog.icons.size
         checkInitialPermission()
         observePlaylistQueueSync()
-        observeCurrentSongForLyrics()
+    }
+
+    fun setSongsPageLoading(loading: Boolean) {
+        _isScanning.value = loading
+    }
+
+    fun setPlaylistsPageLoading(loading: Boolean) {
+        _isPlaylistsLoading.value = loading
     }
 
     private fun observePlaylistQueueSync() {
         viewModelScope.launch {
             playlists.collect { playlistList ->
                 playbackManager.syncPlaylists(playlistList)
+                _isPlaylistsLoading.value = false
             }
-        }
-    }
-
-    private fun observeCurrentSongForLyrics() {
-        viewModelScope.launch {
-            playbackState
-                .distinctUntilChangedBy { it.currentSong?.id to it.currentSong?.title }
-                .collectLatest { state ->
-                    lyricsRepository.loadLyricsForSong(state.currentSong, forceRescan = false)
-                }
-        }
-    }
-
-    fun rescanCurrentSongLyrics() {
-        val currentSong = playbackState.value.currentSong ?: return
-        lyricsJob?.cancel()
-        lyricsJob = viewModelScope.launch {
-            lyricsRepository.rescanLyrics(currentSong)
-            _userMessage.value = localizedString(R.string.toast_lyrics_refreshed)
-        }
-    }
-
-    fun downloadOfflineLyricsModel() {
-        val currentSong = playbackState.value.currentSong
-        lyricsJob?.cancel()
-        lyricsJob = viewModelScope.launch {
-            lyricsRepository.downloadOfflineModelAndTranscribe(currentSong)
         }
     }
 
@@ -258,9 +248,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } else {
             ContextCompat.checkSelfPermission(app, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
         }
-        if (isGranted) {
-            onPermissionResult(true)
-        }
+        onPermissionResult(isGranted)
     }
 
     fun onBassStrengthChange(strength: Int, persist: Boolean = true) {
@@ -324,7 +312,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_appLanguage.value != language) {
             _appLanguage.value = language
             themePrefs.edit().putString(KEY_APP_LANGUAGE, language.id).apply()
-            lyricsRepository.setLocale(language.toLocale())
         } else if (!themePrefs.contains(KEY_APP_LANGUAGE)) {
             themePrefs.edit().putString(KEY_APP_LANGUAGE, language.id).apply()
         }
@@ -469,6 +456,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching {
                 playlistRepository.reorderPlaylists(orderedIds)
+            }
+        }
+    }
+
+    fun reorderPlaylistSongs(playlist: Playlist, orderedSongs: List<Song>) {
+        if (orderedSongs.isEmpty()) return
+        playbackManager.reorderActivePlaylistSongs(playlist.id, orderedSongs)
+        val orderedIds = orderedSongs.map { it.id }
+        viewModelScope.launch {
+            runCatching {
+                playlistRepository.reorderPlaylistSongs(playlist.id, orderedIds)
             }
         }
     }
@@ -672,7 +670,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     override fun onCleared() {
         songsJob?.cancel()
-        lyricsJob?.cancel()
         pendingOperation = null
         super.onCleared()
     }
